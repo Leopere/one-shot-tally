@@ -107,6 +107,74 @@ func TestDeniedCombinedTestAndProductionIsNotCountedAsTest(t *testing.T) {
 	}
 }
 
+func TestBlocksDestructiveGitMetadataCommands(t *testing.T) {
+	dir := t.TempDir()
+	commands := []string{
+		"git filter-branch -- --all",
+		"git -C repo worktree remove --force ../temporary",
+		"/usr/bin/git -C '/Volumes/macmini dump/Dev/repo' worktree move old new",
+		"git worktree prune",
+		"git update-ref -d refs/original/refs/heads/main",
+		"git reset --hard origin/main",
+		"rm -rf /tmp/project/.git",
+		"printf corrupt > .git/config",
+	}
+	for i, command := range commands {
+		out := hook(t, dir, map[string]any{
+			"session_id": "s", "turn_id": "git-guard", "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("blocked-%d", i),
+			"tool_input": map[string]any{"command": command},
+		})
+		text := string(mustJSON(out))
+		if !strings.Contains(text, `"permissionDecision":"deny"`) || !strings.Contains(text, "Git metadata and history destruction is disabled") {
+			t.Fatalf("command %q was not denied: %#v", command, out)
+		}
+	}
+	s := loadTestState(t, dir)
+	if s.GitMetadataBlocks != len(commands) || len(s.Pending) != 0 || s.Revision != 0 {
+		t.Fatalf("git guard state = %#v", s)
+	}
+	if !strings.Contains(reportLine(s), "Git metadata: 8 blocked") {
+		t.Fatalf("report omits Git guard: %s", reportLine(s))
+	}
+}
+
+func TestGitMetadataGuardAllowsOrdinaryGitWork(t *testing.T) {
+	dir := t.TempDir()
+	commands := []string{
+		"git status --short",
+		"git fsck --full",
+		"git worktree list --porcelain",
+		"git fetch --prune --tags origin",
+		"rg .git README.md",
+	}
+	for i, command := range commands {
+		out := hook(t, dir, map[string]any{
+			"session_id": "s", "turn_id": "git-allowed", "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("allowed-%d", i),
+			"tool_input": map[string]any{"command": command},
+		})
+		if strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
+			t.Fatalf("ordinary command %q was denied: %#v", command, out)
+		}
+	}
+	if s := loadTestState(t, dir); s.GitMetadataBlocks != 0 {
+		t.Fatalf("ordinary Git work triggered guard: %#v", s)
+	}
+}
+
+func TestBlocksDirectGitMetadataEdit(t *testing.T) {
+	dir := t.TempDir()
+	out := hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "git-edit", "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "edit",
+		"tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: .git/config\n@@\n-old\n+new\n*** End Patch"},
+	})
+	if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
+		t.Fatalf("direct .git edit was not denied: %#v", out)
+	}
+}
+
 func TestNoOpTestTokenCannotVerifyRevision(t *testing.T) {
 	dir := t.TempDir()
 	common := map[string]any{"session_id": "s", "turn_id": "fake"}
@@ -396,7 +464,7 @@ func TestSparkCallsAreEncouragedAndDiscounted(t *testing.T) {
 func TestHelpDocumentsSparkPolicy(t *testing.T) {
 	var out bytes.Buffer
 	printHelp(&out)
-	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted", "During /goal work", "high tool-call volume is expected and is not scored"} {
+	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted", "During /goal work", "high tool-call volume is expected and is not scored", "Destructive Git-history", "direct .git mutations are denied"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
 		}
@@ -406,7 +474,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.5", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.8.6", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}

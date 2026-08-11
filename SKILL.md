@@ -29,6 +29,7 @@ one-shot-tally help|-h|--help
 - Coaching signals are advisory. They cannot change `SUCCESS` or justify stopping early.
 - During `/goal` work, high tool-call volume is expected and is not scored. Other coaching signals still apply.
 - Delivery-gate edits are denied unless replaced in the same edit.
+- Destructive history, worktree, and direct `.git` mutations are denied. Use read-only Git inspection or `ship-it`.
 - A blocked gate can recover only after corrected edit and verification.
 - Record successful verified production calls as delivery evidence. Do not treat command success as a live-service check.
 - Use `spark_worker` for bounded, low-risk tasks.

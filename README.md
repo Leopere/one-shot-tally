@@ -69,6 +69,12 @@ A blocked gate can recover only after a corrected same-edit replacement and fina
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Park useful work that is outside the requested goal. Return to it later.
 
+## Git metadata guard
+
+The hook denies automated history rewrites, destructive worktree commands, and direct writes to `.git`.
+Read-only Git inspection, ordinary commits, fetches, and `ship-it` remain available.
+Perform exceptional history or worktree surgery manually after you make a backup.
+
 ## Background workflow
 
 Record long jobs before detaching:

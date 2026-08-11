@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.5"
+const binaryVersion = "1.8.6"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -35,6 +35,9 @@ var (
 	shipGateRE             = regexp.MustCompile(`(?i)\bship-it\b|(^|[/\s` + "`" + `])ship(\.project)?\.sh\b`)
 	deployGateRE           = regexp.MustCompile(`(?i)\bdeploy-it\b|(^|[/\s` + "`" + `])deploy\.sh\b|\.woodpecker\.ya?ml|\.github/workflows|workflow_dispatch|woodpecker[^\n]*(deploy|trigger|push|build|success|converg)|(deploy|trigger|push|build|success|converg)[^\n]*woodpecker`)
 	directContractDeleteRE = regexp.MustCompile(`(?i)(^|[;&|])\s*(git\s+rm|rm)\b[^;\n]*(ship-it|deploy-it|ship(\.project)?\.sh|deploy\.sh|\.woodpecker\.ya?ml|\.github/workflows)`)
+	dangerousGitCommandRE  = regexp.MustCompile(`(?i)(^|[;&|]\s*)\s*([A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(\S*/)?git(\s+(-C|--git-dir|--work-tree)\s+("[^"]*"|'[^']*'|\S+))*\s+(filter-branch|filter-repo|reset\s+--hard|clean(\s|$)|reflog\s+(expire|delete)|update-ref\b[^;&|\n]*\s-d(\s|$)|worktree\s+(remove|move|prune|repair)(\s|$)|gc\b[^;&|\n]*--prune(=|\s+)now|prune(\s|$)|replace(\s|$))`)
+	gitMetadataPathRE      = regexp.MustCompile(`(?i)(^|[/\\\s"'=])\.git([/\\\s"'=]|$)`)
+	gitMetadataWriteRE     = regexp.MustCompile(`(?i)(^|[;&|]\s*)\s*(rm|rmdir|unlink|mv|cp|chmod|chown|touch|truncate|install|mkdir|ln|tee|dd)\b|(^|[;&|]\s*)\s*find\b[^;&|\n]*\s-delete(\s|$)|>>?\s*[^;&|\n]*\.git([/\\\s"']|$)`)
 )
 
 type event struct {
@@ -90,6 +93,7 @@ type state struct {
 	DeliveryContractFailures    int                    `json:"delivery_contract_failures"`
 	DeliveryContractRecoveries  int                    `json:"delivery_contract_recoveries"`
 	OpenDeliveryContractFailure bool                   `json:"open_delivery_contract_failure"`
+	GitMetadataBlocks           int                    `json:"git_metadata_blocks"`
 	TodosParked                 int                    `json:"todos_parked"`
 	TodosCompleted              int                    `json:"todos_completed"`
 	ToolCounts                  map[string]int         `json:"tool_counts"`
@@ -217,6 +221,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
 	fmt.Fprintln(w, "  Successful verified production calls are reported and earn one capped outcome credit.")
 	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied.")
+	fmt.Fprintln(w, "  Destructive Git-history, worktree, and direct .git mutations are denied. Use read-only Git inspection or ship-it.")
 	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
 	fmt.Fprintln(w, "  F is reserved for failed or unverified outcomes; verified completion has a D/50 floor even when inefficient.")
 	fmt.Fprintln(w, "  Park useful side discoveries in the durable TODO list; a verified current outcome earns a small capped reward.")
@@ -290,6 +295,7 @@ func preToolUse(e event, w io.Writer) error {
 	isTodoDone := isCommand && todoDoneRE.MatchString(command)
 	removedGates := removedDeliveryGates(e.ToolInput)
 	contractFailure := (isEdit && len(removedGates) > 0) || (isCommand && directContractDeleteRE.MatchString(command))
+	gitMetadataMutation := (isCommand && commandMutatesGitMetadata(command)) || (isEdit && editTargetsGitMetadata(e.ToolInput))
 
 	previousCostUnits := s.CallCostUnits
 	s.TotalCalls++
@@ -303,6 +309,16 @@ func preToolUse(e event, w io.Writer) error {
 	fp := fingerprint(e.ToolName, e.ToolInput)
 	s.Fingerprints[fp]++
 	repeats := s.Fingerprints[fp]
+	if gitMetadataMutation {
+		s.GitMetadataBlocks++
+		if err := save(p, s); err != nil {
+			return err
+		}
+		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
+			HookEventName: "PreToolUse", PermissionDecision: "deny",
+			PermissionDecisionReason: "Blocked: automated Git metadata and history destruction is disabled. This action can rewrite or remove .git state. Use read-only Git inspection or ordinary ship-it. Perform exceptional history or worktree surgery manually outside the agent hook after making a backup.",
+		}})
+	}
 	if contractFailure {
 		s.DeliveryContractFailures++
 		s.OpenDeliveryContractFailure = true
@@ -534,7 +550,7 @@ func reportLine(s state) string {
 		mode = " | Run mode: /goal (high tool-call volume expected)"
 		coaching = "advisory; tool-call volume not scored"
 	}
-	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, numericScore(s), coaching)
+	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Git metadata: %d blocked | Delivery contract: %d blocked, %d recovered | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.GitMetadataBlocks, s.DeliveryContractFailures, s.DeliveryContractRecoveries, numericScore(s), coaching)
 }
 
 func numericScore(s state) int {
@@ -647,6 +663,44 @@ func removedDeliveryGates(raw json.RawMessage) []string {
 		missing = append(missing, "automated deploy gate")
 	}
 	return missing
+}
+
+func commandMutatesGitMetadata(command string) bool {
+	if dangerousGitCommandRE.MatchString(command) {
+		return true
+	}
+	return gitMetadataPathRE.MatchString(command) && gitMetadataWriteRE.MatchString(command)
+}
+
+func editTargetsGitMetadata(raw json.RawMessage) bool {
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	for _, key := range []string{"path", "file_path"} {
+		if path, ok := fields[key].(string); ok && pathContainsGitMetadata(path) {
+			return true
+		}
+	}
+	patch, _ := fields["patch"].(string)
+	for _, line := range strings.Split(patch, "\n") {
+		for _, prefix := range []string{"*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:", "--- a/", "+++ b/"} {
+			if strings.HasPrefix(line, prefix) && pathContainsGitMetadata(strings.TrimSpace(strings.TrimPrefix(line, prefix))) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pathContainsGitMetadata(path string) bool {
+	path = strings.ReplaceAll(strings.Trim(path, " \t\r\n\"'"), "\\", "/")
+	for _, part := range strings.Split(path, "/") {
+		if strings.EqualFold(part, ".git") {
+			return true
+		}
+	}
+	return false
 }
 
 func passiveWait(e event, command string) bool {
