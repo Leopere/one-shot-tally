@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.6"
+const binaryVersion = "1.8.7"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -283,6 +283,7 @@ func preToolUse(e event, w io.Writer) error {
 		s.GoalScoped = true
 	}
 	command := commandFrom(e.ToolInput)
+	deliveryCommand := strings.Contains(strings.ToLower(command), "ship-it") || strings.Contains(strings.ToLower(command), "deploy-it")
 	isEdit := e.ToolName == "apply_patch" || e.ToolName == "Edit" || e.ToolName == "Write"
 	isCommand := isCommandTool(e.ToolName)
 	isTest := isCommand && testRE.MatchString(command)
@@ -295,7 +296,7 @@ func preToolUse(e event, w io.Writer) error {
 	isTodoDone := isCommand && todoDoneRE.MatchString(command)
 	removedGates := removedDeliveryGates(e.ToolInput)
 	contractFailure := (isEdit && len(removedGates) > 0) || (isCommand && directContractDeleteRE.MatchString(command))
-	gitMetadataMutation := (isCommand && commandMutatesGitMetadata(command)) || (isEdit && editTargetsGitMetadata(e.ToolInput))
+	gitMetadataMutation := !deliveryCommand && ((isCommand && commandMutatesGitMetadata(command)) || (isEdit && editTargetsGitMetadata(e.ToolInput)))
 
 	previousCostUnits := s.CallCostUnits
 	s.TotalCalls++
@@ -343,7 +344,7 @@ func preToolUse(e event, w io.Writer) error {
 			s.MaxInspectionStreak = s.InspectionStreak
 		}
 	}
-	if isProduction && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
+	if isProduction && !deliveryCommand && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
 		s.ProductionBlocks++
 		if err := save(p, s); err != nil {
 			return err

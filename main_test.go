@@ -474,7 +474,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.6", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.8.7", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
