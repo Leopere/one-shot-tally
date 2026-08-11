@@ -40,6 +40,9 @@ one-shot-tally status --json
 one-shot-tally background record JOB_ID --cleanup 'tmux kill-session -t JOB_ID'
 one-shot-tally background complete JOB_ID
 one-shot-tally background list
+one-shot-tally todo add 'Investigate another issue' --context 'Useful but outside the current goal'
+one-shot-tally todo list
+one-shot-tally todo done TODO_ID
 one-shot-tally version
 ```
 
@@ -56,6 +59,20 @@ State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DI
 - A successful background record earns back up to five points per job (ten total). Passive waits cost seven points each, capped at 25, so recording a job never fully erases a later polling penalty.
 - Removing a ship gate (`ship-it`, `ship.sh`) or automated deploy gate (`deploy-it`, Woodpecker, or GitHub workflows) without an equivalent same-edit replacement is denied before anything changes. Stopping there fails the run. A subsequent successful contract-preserving edit plus final verification recovers shipping eligibility, while the blocked shortcut retains a 15-point penalty.
 - F is reserved for a failed or unverified final outcome. A completed revision with recorded passing verification cannot score below D/50; time, tool pressure, premature production attempts, inspection, and waiting can still reduce it to that floor.
+- Useful discoveries outside the current goal can be parked in a durable TODO list with required deferral context. Up to three unique parked items earn two points each, but only after the current outcome is verified; completing side items gives no extra points during that run.
+
+## Park rabbit holes without losing them
+
+When investigation uncovers worthwhile work outside the current acceptance boundary, record it and return to the current goal:
+
+```sh
+one-shot-tally todo add \
+  'Evaluate semantic detection of near-duplicate inspections' \
+  --context 'Requires a calibrated corpus; not required for the current change'
+one-shot-tally todo list
+```
+
+The list is durable across turns and repositories. Each item records its source directory and rejects duplicate text from the same source. Use `todo done ID` when a later task completes it. The reward is deliberately attached to verified completion of the current goal—not to completing the side quest—so parking a tangent is encouraged while pursuing it prematurely is not.
 
 ## Background work without polling
 
@@ -85,6 +102,7 @@ When run inside tmux, `record` captures `$TMUX_PANE`. `complete` marks the job c
 | Passive-wait penalty | Discourages polling long jobs | A bounded wait can occasionally be the least risky action | Warning and capped score penalty; never blocks the wait |
 | Delivery-contract guard | Prevents agents from claiming efficiency by deleting ship/deploy gates | A permanent turn failure can scare an agent into stopping | Removal is denied before it changes the revision; same-edit migration or a corrected edit can recover, with a retained penalty |
 | Success floor | Keeps PASS/FAIL about outcomes | A long successful run can accumulate enough process penalties to receive F | Verified completion floors discipline at D/50; unresolved correctness or safety failures remain F |
+| Deferred-work reward | Preserves useful discoveries without expanding current scope | Agents could invent TODOs to farm points | Context is required, duplicates are rejected, reward is capped at six, and it applies only after current verification |
 
 The tally does not reward or punish elapsed wall-clock time by itself. A time target would invite sleeping and passive polling. Session guidance instead makes the ordering explicit: completing the requested outcome and verifying it outrank tool-count efficiency, and warnings are instructions to change approach rather than stop working.
 

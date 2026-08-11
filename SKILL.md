@@ -21,6 +21,10 @@ Usage:
   one-shot-tally background complete ID
                                   mark complete and wake the originating tmux pane
   one-shot-tally background list  list recorded background jobs and cleanup commands
+  one-shot-tally todo add TEXT --context WHY
+                                  park out-of-scope work and return to the goal
+  one-shot-tally todo list [--all] list deferred work
+  one-shot-tally todo done ID      complete one deferred item
   one-shot-tally version          show the version
   one-shot-tally help|-h|--help   show this help
 ```
@@ -42,6 +46,7 @@ Run `one-shot-tally --help` for the installed binary's current help.
 - Complete the requested outcome. Never optimize the tally by doing nothing, narrowing scope, or stopping at the first warning; spend the time necessary for evidence, implementation, and final verification.
 - Preserve the complete delivery contract. Removing `ship-it`, `ship.sh`, `deploy-it`, Woodpecker deployment steps, or GitHub workflow entrypoints without an equivalent same-edit replacement is denied before anything changes. Continue immediately with a corrected contract-preserving edit. Successful correction plus final verification restores shipping eligibility, while the blocked attempt retains a score penalty.
 - Treat PASS/FAIL as an outcome signal and the letter grade as process discipline. Failed tests at stop, an unverified edited revision, or an unresolved delivery-contract block receives F. A verified completed revision has a D/50 floor even if it was long or inefficient.
+- When useful work is discovered outside the current acceptance boundary, run `one-shot-tally todo add TEXT --context WHY` and return to the current goal. Unique parked work receives a small capped reward only after the current outcome is verified. Do not pursue easy TODOs mid-task to improve the score; completing them adds no same-run reward.
 
 ## Build and install
 

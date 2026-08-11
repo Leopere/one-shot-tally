@@ -27,6 +27,8 @@ var (
 	detachedTmuxRE         = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
 	backgroundRecordRE     = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
 	backgroundCompleteRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
+	todoAddRE              = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+add\b`)
+	todoDoneRE             = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+done\b`)
 	shipGateRE             = regexp.MustCompile(`(?i)\bship-it\b|(^|[/\s` + "`" + `])ship(\.project)?\.sh\b`)
 	deployGateRE           = regexp.MustCompile(`(?i)\bdeploy-it\b|(^|[/\s` + "`" + `])deploy\.sh\b|\.woodpecker\.ya?ml|\.github/workflows|workflow_dispatch|woodpecker[^\n]*(deploy|trigger|push|build|success|converg)|(deploy|trigger|push|build|success|converg)[^\n]*woodpecker`)
 	directContractDeleteRE = regexp.MustCompile(`(?i)(^|[;&|])\s*(git\s+rm|rm)\b[^;\n]*(ship-it|deploy-it|ship(\.project)?\.sh|deploy\.sh|\.woodpecker\.ya?ml|\.github/workflows)`)
@@ -53,6 +55,8 @@ type pendingCall struct {
 	BackgroundRecord   bool      `json:"background_record"`
 	BackgroundComplete bool      `json:"background_complete"`
 	ContractRecovery   bool      `json:"contract_recovery"`
+	TodoAdd            bool      `json:"todo_add"`
+	TodoDone           bool      `json:"todo_done"`
 }
 
 type state struct {
@@ -81,6 +85,8 @@ type state struct {
 	DeliveryContractFailures    int                    `json:"delivery_contract_failures"`
 	DeliveryContractRecoveries  int                    `json:"delivery_contract_recoveries"`
 	OpenDeliveryContractFailure bool                   `json:"open_delivery_contract_failure"`
+	TodosParked                 int                    `json:"todos_parked"`
+	TodosCompleted              int                    `json:"todos_completed"`
 	ToolCounts                  map[string]int         `json:"tool_counts"`
 	Fingerprints                map[string]int         `json:"fingerprints"`
 	TestFingerprints            map[string]int         `json:"test_fingerprints"`
@@ -98,6 +104,15 @@ type backgroundJob struct {
 	TurnID      string    `json:"turn_id,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	CompletedAt time.Time `json:"completed_at,omitempty"`
+}
+
+type todoItem struct {
+	ID        string    `json:"id"`
+	Text      string    `json:"text"`
+	Context   string    `json:"context"`
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"created_at"`
+	DoneAt    time.Time `json:"done_at,omitempty"`
 }
 
 type lifetime struct {
@@ -140,14 +155,19 @@ func main() {
 				fatal(err)
 			}
 			return
+		case "todo":
+			if err := todoCommand(os.Args[2:], os.Stdout); err != nil {
+				fatal(err)
+			}
+			return
 		case "version":
-			fmt.Println("one-shot-tally 1.6.0")
+			fmt.Println("one-shot-tally 1.7.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
 			return
 		default:
-			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|version|help]"))
+			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|todo <add|list|done>|version|help]"))
 		}
 	}
 	if err := runHook(os.Stdin, os.Stdout); err != nil {
@@ -167,6 +187,10 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally background complete ID")
 	fmt.Fprintln(w, "                                  mark complete and wake the originating tmux pane")
 	fmt.Fprintln(w, "  one-shot-tally background list  list recorded background jobs and cleanup commands")
+	fmt.Fprintln(w, "  one-shot-tally todo add TEXT --context WHY")
+	fmt.Fprintln(w, "                                  park discovered out-of-scope work and return to the goal")
+	fmt.Fprintln(w, "  one-shot-tally todo list [--all] list open deferred work, or include completed items")
+	fmt.Fprintln(w, "  one-shot-tally todo done ID      complete one deferred item")
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)
@@ -179,6 +203,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied.")
 	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
 	fmt.Fprintln(w, "  F is reserved for failed or unverified outcomes; verified completion has a D/50 floor even when inefficient.")
+	fmt.Fprintln(w, "  Park useful side discoveries in the durable TODO list; a verified current outcome earns a small capped reward.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -190,7 +215,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	case "SessionStart":
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName:     "SessionStart",
-			AdditionalContext: "Complete the requested outcome; do not optimize a score by doing nothing, narrowing scope, or stopping at the first warning. Spend the time necessary for evidence, implementation, and final verification, while avoiding repeated work and passive waiting. Delegate independent, bounded, low-risk work to spark_worker subagents when useful; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. A denied ship/deploy-contract removal changes nothing: immediately make a corrected contract-preserving edit, verify it, and continue; recovery remains eligible to ship with a score penalty. For long work, record cleanup and a completion wake-up instead of polling. The compiled hook mechanically counts outcomes and process signals; efficiency never outranks completion or correctness.",
+			AdditionalContext: "Complete the requested outcome; do not optimize a score by doing nothing, narrowing scope, or stopping at the first warning. Spend the time necessary for evidence, implementation, and final verification, while avoiding repeated work and passive waiting. When useful out-of-scope work appears, park it with `one-shot-tally todo add TEXT --context WHY`, then return to the current goal; a small capped reward applies only after the current outcome is verified. Delegate independent, bounded, low-risk work to spark_worker subagents when useful; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. A denied ship/deploy-contract removal changes nothing: immediately make a corrected contract-preserving edit, verify it, and continue; recovery remains eligible to ship with a score penalty. For long work, record cleanup and a completion wake-up instead of polling. The compiled hook mechanically counts outcomes and process signals; efficiency never outranks completion or correctness.",
 		}})
 	case "PreToolUse":
 		return preToolUse(e, w)
@@ -217,6 +242,8 @@ func preToolUse(e event, w io.Writer) error {
 	isPassiveWait := passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
+	isTodoAdd := isCommand && todoAddRE.MatchString(command)
+	isTodoDone := isCommand && todoDoneRE.MatchString(command)
 	removedGates := removedDeliveryGates(e.ToolInput)
 	contractFailure := (isEdit && len(removedGates) > 0) || (isCommand && directContractDeleteRE.MatchString(command))
 
@@ -266,7 +293,7 @@ func preToolUse(e event, w io.Writer) error {
 		s.PassiveWaits++
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s)}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s), TodoAdd: isTodoAdd, TodoDone: isTodoDone}
 	}
 
 	if isProduction && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
@@ -374,6 +401,12 @@ func postToolUse(e event, w io.Writer) error {
 			s.DeliveryContractRecoveries++
 			s.OpenDeliveryContractFailure = false
 		}
+		if pending.TodoAdd && responsePassed(e.ToolResponse) {
+			s.TodosParked++
+		}
+		if pending.TodoDone && responsePassed(e.ToolResponse) {
+			s.TodosCompleted++
+		}
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -411,7 +444,7 @@ func reportLine(s state) string {
 	if !finalPassed(s) {
 		result = "FAIL"
 	}
-	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
+	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
 }
 
 func grade(s state) string {
@@ -465,6 +498,9 @@ func numericScore(s state) int {
 	score -= minInt(30, s.DeliveryContractFailures*15)
 	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
+	if finalPassed(s) {
+		score += minInt(6, s.TodosParked*2)
+	}
 	if s.MaxInspectionStreak >= 8 {
 		score -= minInt(15, s.MaxInspectionStreak-5)
 	}
@@ -895,6 +931,147 @@ func backgroundJobsPath() (string, error) {
 	return filepath.Join(filepath.Dir(p), "background-jobs.json"), nil
 }
 
+func todoCommand(args []string, w io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: one-shot-tally todo <add|list|done>")
+	}
+	switch args[0] {
+	case "add":
+		if len(args) != 4 || args[2] != "--context" {
+			return errors.New("usage: one-shot-tally todo add TEXT --context WHY")
+		}
+		return addTodo(args[1], args[3], w)
+	case "list":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--all") {
+			return errors.New("usage: one-shot-tally todo list [--all]")
+		}
+		return listTodos(len(args) == 2, w)
+	case "done":
+		if len(args) != 2 {
+			return errors.New("usage: one-shot-tally todo done ID")
+		}
+		return completeTodo(args[1], w)
+	default:
+		return fmt.Errorf("unknown todo command %q", args[0])
+	}
+}
+
+func addTodo(text, context string, w io.Writer) error {
+	text, context = singleLine(text), singleLine(context)
+	if text == "" || context == "" {
+		return errors.New("TODO text and deferral context are required")
+	}
+	source, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	idSum := sha256.Sum256([]byte(strings.ToLower(source + "\n" + text)))
+	id := hex.EncodeToString(idSum[:5])
+	items, err := loadTodos()
+	if err != nil {
+		return err
+	}
+	if _, exists := items[id]; exists {
+		return fmt.Errorf("TODO %s already exists; do not duplicate deferred work", id)
+	}
+	items[id] = todoItem{ID: id, Text: text, Context: context, Source: source, CreatedAt: time.Now().UTC()}
+	if err := saveTodos(items); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Parked TODO %s: %s. Return to the current goal.\n", id, text)
+	return nil
+}
+
+func listTodos(includeDone bool, w io.Writer) error {
+	items, err := loadTodos()
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(items))
+	for id, item := range items {
+		if includeDone || item.DoneAt.IsZero() {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := items[ids[i]], items[ids[j]]
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return left.ID < right.ID
+		}
+		return left.CreatedAt.Before(right.CreatedAt)
+	})
+	for _, id := range ids {
+		item := items[id]
+		status := "open"
+		if !item.DoneAt.IsZero() {
+			status = "done"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\tcontext: %s\tsource: %s\n", item.ID, status, item.Text, item.Context, item.Source)
+	}
+	return nil
+}
+
+func completeTodo(id string, w io.Writer) error {
+	items, err := loadTodos()
+	if err != nil {
+		return err
+	}
+	item, exists := items[id]
+	if !exists {
+		return fmt.Errorf("TODO %q is not recorded", id)
+	}
+	if !item.DoneAt.IsZero() {
+		return fmt.Errorf("TODO %s is already complete", id)
+	}
+	item.DoneAt = time.Now().UTC()
+	items[id] = item
+	if err := saveTodos(items); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Completed TODO %s: %s\n", id, item.Text)
+	return nil
+}
+
+func loadTodos() (map[string]todoItem, error) {
+	p, err := todosPath()
+	if err != nil {
+		return nil, err
+	}
+	items := map[string]todoItem{}
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return items, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return items, json.Unmarshal(b, &items)
+}
+
+func saveTodos(items map[string]todoItem) error {
+	p, err := todosPath()
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
+func todosPath() (string, error) {
+	p, err := lifetimePath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(p), "todos.json"), nil
+}
+
 func valueOr(value, fallback string) string {
 	if value == "" {
 		return fallback
@@ -933,7 +1110,7 @@ func printLatest(asJSON bool) error {
 	}
 	var files []candidate
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == "lifetime.json" || entry.Name() == "background-jobs.json" {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == "lifetime.json" || entry.Name() == "background-jobs.json" || entry.Name() == "todos.json" {
 			continue
 		}
 		info, err := entry.Info()

@@ -418,6 +418,72 @@ func TestSessionGuidanceValuesCompletionOverScore(t *testing.T) {
 	}
 }
 
+func TestTodoLifecycleIsDurableAndDeduplicated(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	var out bytes.Buffer
+	if err := todoCommand([]string{"add", "Investigate alternate transport", "--context", "Useful, but outside the current delivery goal"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	items, err := loadTodos()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	var id string
+	for id = range items {
+	}
+	if err := todoCommand([]string{"add", "Investigate alternate transport", "--context", "duplicate"}, &out); err == nil {
+		t.Fatal("duplicate TODO was accepted")
+	}
+	out.Reset()
+	if err := todoCommand([]string{"list"}, &out); err != nil || !strings.Contains(out.String(), id+"\topen") {
+		t.Fatalf("open list=%q err=%v", out.String(), err)
+	}
+	out.Reset()
+	if err := todoCommand([]string{"done", id}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := todoCommand([]string{"done", id}, &out); err == nil {
+		t.Fatal("duplicate completion was accepted")
+	}
+	out.Reset()
+	if err := todoCommand([]string{"list"}, &out); err != nil || out.Len() != 0 {
+		t.Fatalf("completed TODO remained open: %q err=%v", out.String(), err)
+	}
+	if err := todoCommand([]string{"list", "--all"}, &out); err != nil || !strings.Contains(out.String(), id+"\tdone") {
+		t.Fatalf("all list=%q err=%v", out.String(), err)
+	}
+}
+
+func TestTodoParkingRewardRequiresVerifiedCurrentOutcome(t *testing.T) {
+	verified := state{Revision: 1, VerifiedRevision: 1, Tests: 1, TestPasses: 1, LastTestPassed: true, LastTestResultKnown: true, TodosParked: 2}
+	if got := numericScore(verified); got != 96 {
+		t.Fatalf("verified parking score=%d, want 96", got)
+	}
+	capped := verified
+	capped.TodosParked = 20
+	if got := numericScore(capped); got != 98 {
+		t.Fatalf("parking reward cap score=%d, want 98", got)
+	}
+	unverified := state{Revision: 1, TodosParked: 20}
+	if got := numericScore(unverified); got != 25 {
+		t.Fatalf("unverified work received TODO reward: %d", got)
+	}
+}
+
+func TestHookCountsSuccessfulTodoTransitions(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "todo"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "add", "tool_input": map[string]any{"command": "one-shot-tally todo add 'later' --context 'outside goal'"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "add", "tool_response": map[string]any{"exit_code": 0}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "done", "tool_input": map[string]any{"command": "one-shot-tally todo done abc123"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "done", "tool_response": map[string]any{"exit_code": 0}})
+	s := loadTestState(t, dir)
+	if s.TodosParked != 1 || s.TodosCompleted != 1 || !strings.Contains(reportLine(s), "Deferred work: 1 parked, 1 completed") {
+		t.Fatalf("TODO hook state=%#v report=%s", s, reportLine(s))
+	}
+}
+
 func loadTestState(t *testing.T, dir string) state {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
