@@ -141,7 +141,7 @@ func main() {
 			}
 			return
 		case "version":
-			fmt.Println("one-shot-tally 1.5.0")
+			fmt.Println("one-shot-tally 1.6.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
@@ -178,6 +178,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
 	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied.")
 	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
+	fmt.Fprintln(w, "  F is reserved for failed or unverified outcomes; verified completion has a D/50 floor even when inefficient.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -407,14 +408,14 @@ func stop(e event, w io.Writer) error {
 
 func reportLine(s state) string {
 	result := "PASS"
-	if unresolvedDeliveryContract(s) || (s.TestFailures > 0 && !s.LastTestPassed) {
+	if !finalPassed(s) {
 		result = "FAIL"
 	}
 	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
 }
 
 func grade(s state) string {
-	if numericScore(s) < 50 {
+	if !finalPassed(s) {
 		return "F"
 	}
 	if numericScore(s) < 65 {
@@ -481,12 +482,22 @@ func numericScore(s state) int {
 		score -= minInt(30, int((s.RedundantTestMillis+9_999)/10_000))
 	}
 	if score < 0 {
-		return 0
+		score = 0
 	}
 	if score > 100 {
 		return 100
 	}
+	if finalPassed(s) && score < 50 {
+		return 50
+	}
 	return score
+}
+
+func finalPassed(s state) bool {
+	if unresolvedDeliveryContract(s) || (s.TestFailures > 0 && !s.LastTestPassed) {
+		return false
+	}
+	return s.Revision == 0 || (s.Tests > 0 && s.VerifiedRevision == s.Revision && s.LastTestPassed)
 }
 
 func removedDeliveryGates(raw json.RawMessage) []string {

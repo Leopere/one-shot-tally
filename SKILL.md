@@ -41,6 +41,7 @@ Run `one-shot-tally --help` for the installed binary's current help.
 - Successful records receive a small capped reward. Passive `wait`, polling, `watch`, `tail -f`, sleep loops, and repeated tmux status checks reduce the score but remain allowed when genuinely necessary.
 - Complete the requested outcome. Never optimize the tally by doing nothing, narrowing scope, or stopping at the first warning; spend the time necessary for evidence, implementation, and final verification.
 - Preserve the complete delivery contract. Removing `ship-it`, `ship.sh`, `deploy-it`, Woodpecker deployment steps, or GitHub workflow entrypoints without an equivalent same-edit replacement is denied before anything changes. Continue immediately with a corrected contract-preserving edit. Successful correction plus final verification restores shipping eligibility, while the blocked attempt retains a score penalty.
+- Treat PASS/FAIL as an outcome signal and the letter grade as process discipline. Failed tests at stop, an unverified edited revision, or an unresolved delivery-contract block receives F. A verified completed revision has a D/50 floor even if it was long or inefficient.
 
 ## Build and install
 

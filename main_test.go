@@ -145,9 +145,39 @@ func TestRequiredTestingOutweighsEfficiency(t *testing.T) {
 	if grade(unverified) != "F" || numericScore(unverified) != 25 {
 		t.Fatalf("unverified edit rewarded: grade=%s score=%d", grade(unverified), numericScore(unverified))
 	}
+	if !strings.Contains(reportLine(unverified), "Final result: FAIL") {
+		t.Fatalf("unverified edit reported PASS: %s", reportLine(unverified))
+	}
 	verified := state{Revision: 1, VerifiedRevision: 1, Tests: 2, TestPasses: 2, LastTestPassed: true, LastTestResultKnown: true}
 	if grade(verified) != "A" || numericScore(verified) != 100 {
 		t.Fatalf("verified efficient run not rewarded: grade=%s score=%d", grade(verified), numericScore(verified))
+	}
+}
+
+func TestVerifiedSmsbridgeScaleRunIsDNotF(t *testing.T) {
+	s := state{
+		TotalCalls: 80, CallCostUnits: 320, Tests: 2, TestPasses: 2,
+		Revision: 14, VerifiedRevision: 14, LastTestPassed: true, LastTestResultKnown: true,
+		RepeatedWarnings: 1, ProductionBlocks: 4, MaxInspectionStreak: 10, PassiveWaits: 1,
+		TotalTestMillis: 11_721, MaxTestMillis: 11_640,
+	}
+	if score, gotGrade := numericScore(s), grade(s); score != 50 || gotGrade != "D" {
+		t.Fatalf("verified high-cost run = %s %d, want D 50", gotGrade, score)
+	}
+	if report := reportLine(s); !strings.Contains(report, "Final result: PASS") || !strings.Contains(report, "Discipline score: D (50/100)") {
+		t.Fatalf("verified run report contradicts completion: %s", report)
+	}
+}
+
+func TestCorrectnessFailureStillGetsF(t *testing.T) {
+	for _, s := range []state{
+		{Revision: 1},
+		{Revision: 1, Tests: 1, TestFailures: 1, LastTestResultKnown: true},
+		{OpenDeliveryContractFailure: true},
+	} {
+		if finalPassed(s) || grade(s) != "F" || !strings.Contains(reportLine(s), "Final result: FAIL") {
+			t.Fatalf("true failure escaped F: %#v report=%s", s, reportLine(s))
+		}
 	}
 }
 
