@@ -52,9 +52,7 @@ one-shot-tally help|-h|--help
 - `NOT VERIFIED` means the goal still needs work or evidence.
 - The coaching score is advisory. It cannot change `SUCCESS`.
 
-The hook denies production and delivery commands until the active revision passes verification.
-Removing contract-preserving delivery gates (`ship-it`, `ship.sh`, `deploy-it`, Woodpecker, GitHub workflow deploy entries) is denied before edits.
-A blocked gate can recover only after a corrected same-edit replacement and final verification.
+The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands. It records successful delivery actions as outcome evidence.
 
 ## Coaching signals
 
@@ -63,16 +61,11 @@ A blocked gate can recover only after a corrected same-edit replacement and fina
 - Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
 - Five test runs is a normal pacing guide, not a hard cap.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
-- A denied command does not count as an executed test.
-- After final verification, blocked production attempts retain one capped penalty. A successful production call earns one capped credit.
+- A successful delivery action earns one capped outcome credit.
 - Command success does not prove service health.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Park useful work that is outside the requested goal. Return to it later.
 
-## Git metadata guard
-
-The hook denies automated history rewrites, destructive worktree commands, and direct writes to `.git`.
-Read-only Git inspection, ordinary commits, fetches, and `ship-it` remain available.
 Perform exceptional history or worktree surgery manually after you make a backup.
 
 ## Background workflow

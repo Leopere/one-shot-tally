@@ -17,27 +17,21 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.7"
+const binaryVersion = "1.9.0"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
 	// token anywhere lets harmless commands such as "echo test" forge a passing
 	// verification for the current revision.
-	testRE                 = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
-	readRE                 = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
-	productionRE           = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
-	passiveWaitRE          = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
-	detachedTmuxRE         = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
-	backgroundRecordRE     = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
-	backgroundCompleteRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
-	todoAddRE              = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+add\b`)
-	todoDoneRE             = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+done\b`)
-	shipGateRE             = regexp.MustCompile(`(?i)\bship-it\b|(^|[/\s` + "`" + `])ship(\.project)?\.sh\b`)
-	deployGateRE           = regexp.MustCompile(`(?i)\bdeploy-it\b|(^|[/\s` + "`" + `])deploy\.sh\b|\.woodpecker\.ya?ml|\.github/workflows|workflow_dispatch|woodpecker[^\n]*(deploy|trigger|push|build|success|converg)|(deploy|trigger|push|build|success|converg)[^\n]*woodpecker`)
-	directContractDeleteRE = regexp.MustCompile(`(?i)(^|[;&|])\s*(git\s+rm|rm)\b[^;\n]*(ship-it|deploy-it|ship(\.project)?\.sh|deploy\.sh|\.woodpecker\.ya?ml|\.github/workflows)`)
-	dangerousGitCommandRE  = regexp.MustCompile(`(?i)(^|[;&|]\s*)\s*([A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(\S*/)?git(\s+(-C|--git-dir|--work-tree)\s+("[^"]*"|'[^']*'|\S+))*\s+(filter-branch|filter-repo|reset\s+--hard|clean(\s|$)|reflog\s+(expire|delete)|update-ref\b[^;&|\n]*\s-d(\s|$)|worktree\s+(remove|move|prune|repair)(\s|$)|gc\b[^;&|\n]*--prune(=|\s+)now|prune(\s|$)|replace(\s|$))`)
-	gitMetadataPathRE      = regexp.MustCompile(`(?i)(^|[/\\\s"'=])\.git([/\\\s"'=]|$)`)
-	gitMetadataWriteRE     = regexp.MustCompile(`(?i)(^|[;&|]\s*)\s*(rm|rmdir|unlink|mv|cp|chmod|chown|touch|truncate|install|mkdir|ln|tee|dd)\b|(^|[;&|]\s*)\s*find\b[^;&|\n]*\s-delete(\s|$)|>>?\s*[^;&|\n]*\.git([/\\\s"']|$)`)
+	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
+	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
+	productionRE         = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
+	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
+	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
+	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
+	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
+	todoAddRE            = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+add\b`)
+	todoDoneRE           = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+done\b`)
 )
 
 type event struct {
@@ -60,50 +54,44 @@ type pendingCall struct {
 	RepeatedTest       bool      `json:"repeated_test"`
 	BackgroundRecord   bool      `json:"background_record"`
 	BackgroundComplete bool      `json:"background_complete"`
-	ContractRecovery   bool      `json:"contract_recovery"`
 	TodoAdd            bool      `json:"todo_add"`
 	TodoDone           bool      `json:"todo_done"`
 	GoalTransition     string    `json:"goal_transition,omitempty"`
 }
 
 type state struct {
-	StateVersion                int                    `json:"state_version"`
-	SessionID                   string                 `json:"session_id"`
-	TurnID                      string                 `json:"turn_id"`
-	UpdatedAt                   time.Time              `json:"updated_at"`
-	TotalCalls                  int                    `json:"total_calls"`
-	CallCostUnits               int                    `json:"call_cost_units"`
-	SparkCalls                  int                    `json:"spark_calls"`
-	Tests                       int                    `json:"tests"`
-	TestPasses                  int                    `json:"test_passes"`
-	TestFailures                int                    `json:"test_failures"`
-	TotalTestMillis             int64                  `json:"total_test_millis"`
-	MaxTestMillis               int64                  `json:"max_test_millis"`
-	RedundantTestMillis         int64                  `json:"redundant_test_millis"`
-	Revision                    int                    `json:"revision"`
-	VerifiedRevision            int                    `json:"verified_revision"`
-	InspectionStreak            int                    `json:"inspection_streak"`
-	MaxInspectionStreak         int                    `json:"max_inspection_streak"`
-	RepeatedWarnings            int                    `json:"repeated_warnings"`
-	ProductionBlocks            int                    `json:"production_blocks"`
-	ProductionCompletions       int                    `json:"production_completions"`
-	BackgroundRecords           int                    `json:"background_records"`
-	BackgroundCompletions       int                    `json:"background_completions"`
-	PassiveWaits                int                    `json:"passive_waits"`
-	DeliveryContractFailures    int                    `json:"delivery_contract_failures"`
-	DeliveryContractRecoveries  int                    `json:"delivery_contract_recoveries"`
-	OpenDeliveryContractFailure bool                   `json:"open_delivery_contract_failure"`
-	GitMetadataBlocks           int                    `json:"git_metadata_blocks"`
-	TodosParked                 int                    `json:"todos_parked"`
-	TodosCompleted              int                    `json:"todos_completed"`
-	ToolCounts                  map[string]int         `json:"tool_counts"`
-	Fingerprints                map[string]int         `json:"fingerprints"`
-	TestFingerprints            map[string]int         `json:"test_fingerprints"`
-	Pending                     map[string]pendingCall `json:"pending"`
-	LastTestPassed              bool                   `json:"last_test_passed"`
-	LastTestResultKnown         bool                   `json:"last_test_result_known"`
-	RecordedInLifetime          bool                   `json:"recorded_in_lifetime"`
-	GoalScoped                  bool                   `json:"goal_scoped"`
+	StateVersion          int                    `json:"state_version"`
+	SessionID             string                 `json:"session_id"`
+	TurnID                string                 `json:"turn_id"`
+	UpdatedAt             time.Time              `json:"updated_at"`
+	TotalCalls            int                    `json:"total_calls"`
+	CallCostUnits         int                    `json:"call_cost_units"`
+	SparkCalls            int                    `json:"spark_calls"`
+	Tests                 int                    `json:"tests"`
+	TestPasses            int                    `json:"test_passes"`
+	TestFailures          int                    `json:"test_failures"`
+	TotalTestMillis       int64                  `json:"total_test_millis"`
+	MaxTestMillis         int64                  `json:"max_test_millis"`
+	RedundantTestMillis   int64                  `json:"redundant_test_millis"`
+	Revision              int                    `json:"revision"`
+	VerifiedRevision      int                    `json:"verified_revision"`
+	InspectionStreak      int                    `json:"inspection_streak"`
+	MaxInspectionStreak   int                    `json:"max_inspection_streak"`
+	RepeatedWarnings      int                    `json:"repeated_warnings"`
+	ProductionCompletions int                    `json:"production_completions"`
+	BackgroundRecords     int                    `json:"background_records"`
+	BackgroundCompletions int                    `json:"background_completions"`
+	PassiveWaits          int                    `json:"passive_waits"`
+	TodosParked           int                    `json:"todos_parked"`
+	TodosCompleted        int                    `json:"todos_completed"`
+	ToolCounts            map[string]int         `json:"tool_counts"`
+	Fingerprints          map[string]int         `json:"fingerprints"`
+	TestFingerprints      map[string]int         `json:"test_fingerprints"`
+	Pending               map[string]pendingCall `json:"pending"`
+	LastTestPassed        bool                   `json:"last_test_passed"`
+	LastTestResultKnown   bool                   `json:"last_test_result_known"`
+	RecordedInLifetime    bool                   `json:"recorded_in_lifetime"`
+	GoalScoped            bool                   `json:"goal_scoped"`
 }
 
 type backgroundJob struct {
@@ -138,10 +126,8 @@ type lifetime struct {
 }
 
 type hookSpecificOutput struct {
-	HookEventName            string `json:"hookEventName"`
-	AdditionalContext        string `json:"additionalContext,omitempty"`
-	PermissionDecision       string `json:"permissionDecision,omitempty"`
-	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext,omitempty"`
 }
 
 type hookOutput struct {
@@ -220,8 +206,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
 	fmt.Fprintln(w, "  Successful verified production calls are reported and earn one capped outcome credit.")
-	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied.")
-	fmt.Fprintln(w, "  Destructive Git-history, worktree, and direct .git mutations are denied. Use read-only Git inspection or ship-it.")
+	fmt.Fprintln(w, "  Git, ship-it, and deploy-it actions are never blocked; delivery actions are recorded as outcomes.")
 	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
 	fmt.Fprintln(w, "  F is reserved for failed or unverified outcomes; verified completion has a D/50 floor even when inefficient.")
 	fmt.Fprintln(w, "  Park useful side discoveries in the durable TODO list; a verified current outcome earns a small capped reward.")
@@ -237,7 +222,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Complete and verify the requested goal. Goal success is the only completion metric. Coaching signals can improve the path, but they never turn verified success into failure or justify stopping early. Use the smallest goal-directed next step. Do not manufacture edits, tests, or scope to improve a signal. Park useful side work with `one-shot-tally todo add TEXT --context WHY`, then return to the goal. Delegate bounded, low-risk work to spark_worker subagents when useful. Keep architecture, authorization, integration, and final acceptance with the primary agent. Preserve ship and deploy gates. For long work, record cleanup and a completion wake-up instead of polling. Efficiency never outranks completion or correctness."
+		context := "Complete and verify the requested goal. Goal success is the only completion metric. Coaching signals can improve the path, but they never turn verified success into failure or justify stopping early. Use the smallest goal-directed next step. Do not manufacture edits, tests, or scope to improve a signal. Park useful side work with `one-shot-tally todo add TEXT --context WHY`, then return to the goal. Delegate bounded, low-risk work to spark_worker subagents when useful. Keep architecture, authorization, integration, and final acceptance with the primary agent. Never block Git, ship-it, or deploy-it. For long work, record cleanup and a completion wake-up instead of polling. Efficiency never outranks completion or correctness."
 		goalActive, err := sessionGoalActive(e.SessionID)
 		if err != nil {
 			return err
@@ -283,7 +268,6 @@ func preToolUse(e event, w io.Writer) error {
 		s.GoalScoped = true
 	}
 	command := commandFrom(e.ToolInput)
-	deliveryCommand := strings.Contains(strings.ToLower(command), "ship-it") || strings.Contains(strings.ToLower(command), "deploy-it")
 	isEdit := e.ToolName == "apply_patch" || e.ToolName == "Edit" || e.ToolName == "Write"
 	isCommand := isCommandTool(e.ToolName)
 	isTest := isCommand && testRE.MatchString(command)
@@ -294,9 +278,6 @@ func preToolUse(e event, w io.Writer) error {
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
 	isTodoAdd := isCommand && todoAddRE.MatchString(command)
 	isTodoDone := isCommand && todoDoneRE.MatchString(command)
-	removedGates := removedDeliveryGates(e.ToolInput)
-	contractFailure := (isEdit && len(removedGates) > 0) || (isCommand && directContractDeleteRE.MatchString(command))
-	gitMetadataMutation := !deliveryCommand && ((isCommand && commandMutatesGitMetadata(command)) || (isEdit && editTargetsGitMetadata(e.ToolInput)))
 
 	previousCostUnits := s.CallCostUnits
 	s.TotalCalls++
@@ -310,31 +291,6 @@ func preToolUse(e event, w io.Writer) error {
 	fp := fingerprint(e.ToolName, e.ToolInput)
 	s.Fingerprints[fp]++
 	repeats := s.Fingerprints[fp]
-	if gitMetadataMutation {
-		s.GitMetadataBlocks++
-		if err := save(p, s); err != nil {
-			return err
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: "Blocked: automated Git metadata and history destruction is disabled. This action can rewrite or remove .git state. Use read-only Git inspection or ordinary ship-it. Perform exceptional history or worktree surgery manually outside the agent hook after making a backup.",
-		}})
-	}
-	if contractFailure {
-		s.DeliveryContractFailures++
-		s.OpenDeliveryContractFailure = true
-		if err := save(p, s); err != nil {
-			return err
-		}
-		detail := strings.Join(removedGates, " and ")
-		if detail == "" {
-			detail = "delivery contract"
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: "Blocked: this action removes the " + detail + " without an equivalent same-edit replacement. Nothing changed. Continue now with a corrected contract-preserving edit, then verify the final revision; successful recovery can ship, but this attempt retains a score penalty.",
-		}})
-	}
 	if isEdit {
 		s.Revision++
 		s.InspectionStreak = 0
@@ -343,16 +299,6 @@ func preToolUse(e event, w io.Writer) error {
 		if s.InspectionStreak > s.MaxInspectionStreak {
 			s.MaxInspectionStreak = s.InspectionStreak
 		}
-	}
-	if isProduction && !deliveryCommand && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
-		s.ProductionBlocks++
-		if err := save(p, s); err != nil {
-			return err
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: productionBlockReason(s),
-		}})
 	}
 	repeatedTest := false
 	if isTest {
@@ -364,7 +310,7 @@ func preToolUse(e event, w io.Writer) error {
 		s.PassiveWaits++
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s), TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange}
 	}
 	var messages []string
 	if goalChange == "start" {
@@ -409,17 +355,6 @@ func preToolUse(e event, w io.Writer) error {
 		return writeJSON(w, hookOutput{})
 	}
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}})
-}
-
-func productionBlockReason(s state) string {
-	if unresolvedDeliveryContract(s) {
-		return "Production action blocked: the denied delivery-contract removal is not yet recovered. Continue with one corrected contract-preserving edit, then verify that final revision and retry."
-	}
-	return "Production action blocked: the current code revision does not have a recorded passing verification. Run the final required check once, then retry."
-}
-
-func unresolvedDeliveryContract(s state) bool {
-	return s.OpenDeliveryContractFailure
 }
 
 func nextAction(s state) string {
@@ -479,10 +414,6 @@ func postToolUse(e event, w io.Writer) error {
 		}
 		if pending.Production && responsePassed(e.ToolResponse) {
 			s.ProductionCompletions++
-		}
-		if pending.ContractRecovery && responsePassed(e.ToolResponse) {
-			s.DeliveryContractRecoveries++
-			s.OpenDeliveryContractFailure = false
 		}
 		if pending.TodoAdd && responsePassed(e.ToolResponse) {
 			s.TodosParked++
@@ -551,13 +482,10 @@ func reportLine(s state) string {
 		mode = " | Run mode: /goal (high tool-call volume expected)"
 		coaching = "advisory; tool-call volume not scored"
 	}
-	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Git metadata: %d blocked | Delivery contract: %d blocked, %d recovered | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.GitMetadataBlocks, s.DeliveryContractFailures, s.DeliveryContractRecoveries, numericScore(s), coaching)
+	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Delivery actions: %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, numericScore(s), coaching)
 }
 
 func numericScore(s state) int {
-	if unresolvedDeliveryContract(s) {
-		return 0
-	}
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return 0
 	}
@@ -576,12 +504,6 @@ func numericScore(s state) int {
 	case tests == 1 && s.Revision > 0:
 		score -= 8
 	}
-	productionPenalty := minInt(30, s.ProductionBlocks*15)
-	if finalPassed(s) {
-		productionPenalty = minInt(15, productionPenalty)
-	}
-	score -= productionPenalty
-	score -= minInt(30, s.DeliveryContractFailures*15)
 	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
 	if finalPassed(s) {
@@ -623,85 +545,10 @@ func numericScore(s state) int {
 func completedTests(s state) int { return s.TestPasses + s.TestFailures }
 
 func finalPassed(s state) bool {
-	if unresolvedDeliveryContract(s) || (s.TestFailures > 0 && !s.LastTestPassed) {
+	if s.TestFailures > 0 && !s.LastTestPassed {
 		return false
 	}
 	return s.Revision == 0 || (s.Tests > 0 && s.VerifiedRevision == s.Revision && s.LastTestPassed)
-}
-
-func removedDeliveryGates(raw json.RawMessage) []string {
-	var fields map[string]any
-	if json.Unmarshal(raw, &fields) != nil {
-		return nil
-	}
-	var removed, added []string
-	if patch, ok := fields["patch"].(string); ok {
-		for _, line := range strings.Split(patch, "\n") {
-			switch {
-			case strings.HasPrefix(line, "*** Delete File:"):
-				removed = append(removed, strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File:")))
-			case strings.HasPrefix(line, "*** Add File:"):
-				added = append(added, strings.TrimSpace(strings.TrimPrefix(line, "*** Add File:")))
-			case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
-				removed = append(removed, strings.TrimPrefix(line, "-"))
-			case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
-				added = append(added, strings.TrimPrefix(line, "+"))
-			}
-		}
-	}
-	if oldText, ok := fields["old_string"].(string); ok {
-		removed = append(removed, oldText)
-	}
-	if newText, ok := fields["new_string"].(string); ok {
-		added = append(added, newText)
-	}
-	oldText, newText := strings.Join(removed, "\n"), strings.Join(added, "\n")
-	var missing []string
-	if shipGateRE.MatchString(oldText) && !shipGateRE.MatchString(newText) {
-		missing = append(missing, "ship gate")
-	}
-	if deployGateRE.MatchString(oldText) && !deployGateRE.MatchString(newText) {
-		missing = append(missing, "automated deploy gate")
-	}
-	return missing
-}
-
-func commandMutatesGitMetadata(command string) bool {
-	if dangerousGitCommandRE.MatchString(command) {
-		return true
-	}
-	return gitMetadataPathRE.MatchString(command) && gitMetadataWriteRE.MatchString(command)
-}
-
-func editTargetsGitMetadata(raw json.RawMessage) bool {
-	var fields map[string]any
-	if json.Unmarshal(raw, &fields) != nil {
-		return false
-	}
-	for _, key := range []string{"path", "file_path"} {
-		if path, ok := fields[key].(string); ok && pathContainsGitMetadata(path) {
-			return true
-		}
-	}
-	patch, _ := fields["patch"].(string)
-	for _, line := range strings.Split(patch, "\n") {
-		for _, prefix := range []string{"*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:", "--- a/", "+++ b/"} {
-			if strings.HasPrefix(line, prefix) && pathContainsGitMetadata(strings.TrimSpace(strings.TrimPrefix(line, prefix))) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func pathContainsGitMetadata(path string) bool {
-	path = strings.ReplaceAll(strings.Trim(path, " \t\r\n\"'"), "\\", "/")
-	for _, part := range strings.Split(path, "/") {
-		if strings.EqualFold(part, ".git") {
-			return true
-		}
-	}
-	return false
 }
 
 func passiveWait(e event, command string) bool {
@@ -852,9 +699,6 @@ func loadState(path string, sessionID, turnID string) (state, error) {
 		for id, pending := range s.Pending {
 			if pending.Test && s.Tests > s.TestPasses+s.TestFailures {
 				s.Tests--
-			}
-			if pending.Production && s.ProductionBlocks > 0 {
-				s.ProductionBlocks--
 			}
 			delete(s.Pending, id)
 		}

@@ -75,44 +75,13 @@ func TestMechanicalTallyAndCoachingScore(t *testing.T) {
 	}
 }
 
-func TestBlocksUnverifiedProductionButAllowsRequiredSixthTest(t *testing.T) {
-	dir := t.TempDir()
-	production := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "p", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "p1", "tool_input": map[string]any{"command": "git " + "push origin main"}})
-	if !strings.Contains(string(mustJSON(production)), `"permissionDecision":"deny"`) {
-		t.Fatalf("production not denied: %#v", production)
-	}
-
-	var sixth map[string]any
-	for i := 1; i <= 6; i++ {
-		sixth = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "six", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": fmt.Sprintf("test-%d", i), "tool_input": map[string]any{"command": "pytest suite"}})
-	}
-	encoded := string(mustJSON(sixth))
-	if strings.Contains(encoded, `"permissionDecision":"deny"`) {
-		t.Fatalf("required sixth test was denied: %#v", sixth)
-	}
-	if !strings.Contains(encoded, "exceeds the ordinary 5-run guide") || !strings.Contains(encoded, "Continue required verification") {
-		t.Fatalf("sixth test lacks pacing warning: %#v", sixth)
-	}
-}
-
-func TestDeniedCombinedTestAndProductionIsNotCountedAsTest(t *testing.T) {
-	dir := t.TempDir()
-	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "combined", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "combined", "tool_input": map[string]any{"command": "go test ./... && git push origin main"}})
-	if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
-		t.Fatalf("combined unverified production command was allowed: %#v", out)
-	}
-	s := loadTestState(t, dir)
-	if s.Tests != 0 || len(s.Pending) != 0 || s.ProductionBlocks != 1 {
-		t.Fatalf("denied command changed executed-test state: %#v", s)
-	}
-}
-
-func TestBlocksDestructiveGitMetadataCommands(t *testing.T) {
+func TestDeliveryAndGitCommandsAreNeverDenied(t *testing.T) {
 	dir := t.TempDir()
 	commands := []string{
+		"git push origin main",
+		"ship-it",
+		"deploy-it",
 		"git filter-branch -- --all",
-		"git -C repo worktree remove --force ../temporary",
-		"/usr/bin/git -C '/Volumes/macmini dump/Dev/repo' worktree move old new",
 		"git worktree prune",
 		"git update-ref -d refs/original/refs/heads/main",
 		"git reset --hard origin/main",
@@ -121,57 +90,13 @@ func TestBlocksDestructiveGitMetadataCommands(t *testing.T) {
 	}
 	for i, command := range commands {
 		out := hook(t, dir, map[string]any{
-			"session_id": "s", "turn_id": "git-guard", "hook_event_name": "PreToolUse",
-			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("blocked-%d", i),
-			"tool_input": map[string]any{"command": command},
-		})
-		text := string(mustJSON(out))
-		if !strings.Contains(text, `"permissionDecision":"deny"`) || !strings.Contains(text, "Git metadata and history destruction is disabled") {
-			t.Fatalf("command %q was not denied: %#v", command, out)
-		}
-	}
-	s := loadTestState(t, dir)
-	if s.GitMetadataBlocks != len(commands) || len(s.Pending) != 0 || s.Revision != 0 {
-		t.Fatalf("git guard state = %#v", s)
-	}
-	if !strings.Contains(reportLine(s), "Git metadata: 8 blocked") {
-		t.Fatalf("report omits Git guard: %s", reportLine(s))
-	}
-}
-
-func TestGitMetadataGuardAllowsOrdinaryGitWork(t *testing.T) {
-	dir := t.TempDir()
-	commands := []string{
-		"git status --short",
-		"git fsck --full",
-		"git worktree list --porcelain",
-		"git fetch --prune --tags origin",
-		"rg .git README.md",
-	}
-	for i, command := range commands {
-		out := hook(t, dir, map[string]any{
-			"session_id": "s", "turn_id": "git-allowed", "hook_event_name": "PreToolUse",
+			"session_id": "s", "turn_id": "allowed", "hook_event_name": "PreToolUse",
 			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("allowed-%d", i),
 			"tool_input": map[string]any{"command": command},
 		})
 		if strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
-			t.Fatalf("ordinary command %q was denied: %#v", command, out)
+			t.Fatalf("command %q was denied: %#v", command, out)
 		}
-	}
-	if s := loadTestState(t, dir); s.GitMetadataBlocks != 0 {
-		t.Fatalf("ordinary Git work triggered guard: %#v", s)
-	}
-}
-
-func TestBlocksDirectGitMetadataEdit(t *testing.T) {
-	dir := t.TempDir()
-	out := hook(t, dir, map[string]any{
-		"session_id": "s", "turn_id": "git-edit", "hook_event_name": "PreToolUse",
-		"tool_name": "apply_patch", "tool_use_id": "edit",
-		"tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: .git/config\n@@\n-old\n+new\n*** End Patch"},
-	})
-	if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
-		t.Fatalf("direct .git edit was not denied: %#v", out)
 	}
 }
 
@@ -184,8 +109,8 @@ func TestNoOpTestTokenCannotVerifyRevision(t *testing.T) {
 
 	productionCommand := "git " + "push origin main"
 	production := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "push", "tool_input": map[string]any{"command": productionCommand}})
-	if !strings.Contains(string(mustJSON(production)), `"permissionDecision":"deny"`) {
-		t.Fatalf("fake test unlocked production: %#v", production)
+	if strings.Contains(string(mustJSON(production)), `"permissionDecision":"deny"`) {
+		t.Fatalf("delivery command was denied: %#v", production)
 	}
 
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
@@ -376,13 +301,13 @@ func TestVerifiedSmsbridgeScaleRunRemainsSuccess(t *testing.T) {
 	s := state{
 		TotalCalls: 80, CallCostUnits: 320, Tests: 2, TestPasses: 2,
 		Revision: 14, VerifiedRevision: 14, LastTestPassed: true, LastTestResultKnown: true,
-		RepeatedWarnings: 1, ProductionBlocks: 4, MaxInspectionStreak: 10, PassiveWaits: 1,
+		RepeatedWarnings: 1, MaxInspectionStreak: 10, PassiveWaits: 1,
 		TotalTestMillis: 11_721, MaxTestMillis: 11_640,
 	}
-	if score := numericScore(s); score != 58 || !finalPassed(s) {
+	if score := numericScore(s); score != 73 || !finalPassed(s) {
 		t.Fatalf("verified high-cost run lost success: score=%d", score)
 	}
-	if report := reportLine(s); !strings.HasPrefix(report, "Goal result: SUCCESS") || !strings.Contains(report, "Coaching signals: 58/100 (advisory)") || strings.Contains(report, "Discipline score") {
+	if report := reportLine(s); !strings.HasPrefix(report, "Goal result: SUCCESS") || !strings.Contains(report, "Coaching signals: 73/100 (advisory)") || strings.Contains(report, "Discipline score") {
 		t.Fatalf("verified run report contradicts completion: %s", report)
 	}
 }
@@ -391,10 +316,10 @@ func TestVerifiedDeliveredBetterArgoScaleRunRemainsSuccess(t *testing.T) {
 	s := state{
 		TotalCalls: 73, CallCostUnits: 292, Tests: 5, TestPasses: 4,
 		Revision: 15, VerifiedRevision: 15, LastTestPassed: true, LastTestResultKnown: true,
-		RepeatedWarnings: 2, ProductionBlocks: 3, ProductionCompletions: 1, PassiveWaits: 1,
+		RepeatedWarnings: 2, ProductionCompletions: 1, PassiveWaits: 1,
 		TotalTestMillis: 3_004, MaxTestMillis: 985, RedundantTestMillis: 2_099,
 	}
-	if score := numericScore(s); score != 67 || !finalPassed(s) || !strings.HasPrefix(reportLine(s), "Goal result: SUCCESS") {
+	if score := numericScore(s); score != 82 || !finalPassed(s) || !strings.HasPrefix(reportLine(s), "Goal result: SUCCESS") {
 		t.Fatalf("verified delivered run lost success: score=%d report=%s", score, reportLine(s))
 	}
 }
@@ -403,7 +328,6 @@ func TestUnverifiedOutcomeDoesNotReportSuccess(t *testing.T) {
 	for _, s := range []state{
 		{Revision: 1},
 		{Revision: 1, Tests: 1, TestFailures: 1, LastTestResultKnown: true},
-		{OpenDeliveryContractFailure: true},
 	} {
 		if finalPassed(s) || !strings.Contains(reportLine(s), "Goal result: NOT VERIFIED") {
 			t.Fatalf("unverified state reported success: %#v report=%s", s, reportLine(s))
@@ -464,7 +388,7 @@ func TestSparkCallsAreEncouragedAndDiscounted(t *testing.T) {
 func TestHelpDocumentsSparkPolicy(t *testing.T) {
 	var out bytes.Buffer
 	printHelp(&out)
-	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted", "During /goal work", "high tool-call volume is expected and is not scored", "Destructive Git-history", "direct .git mutations are denied"} {
+	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted", "During /goal work", "high tool-call volume is expected and is not scored", "Git, ship-it, and deploy-it actions are never blocked"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
 		}
@@ -474,7 +398,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.7", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.9.0", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -587,21 +511,8 @@ func TestPatchContentsCannotForgeCommandEvents(t *testing.T) {
 	b, _ := os.ReadFile(files[0])
 	var s state
 	_ = json.Unmarshal(b, &s)
-	if s.Tests != 0 || s.ProductionBlocks != 0 || s.Revision != 1 {
+	if s.Tests != 0 || s.Revision != 1 {
 		t.Fatalf("patch contents treated as shell commands: %#v", s)
-	}
-}
-
-func TestProductionBlockCanRecoverAfterFinalVerification(t *testing.T) {
-	s := state{
-		Revision: 1, VerifiedRevision: 1, Tests: 2, TestPasses: 2,
-		LastTestPassed: true, LastTestResultKnown: true, ProductionBlocks: 1,
-	}
-	if got := numericScore(s); got != 85 {
-		t.Fatalf("recovered production block score = %d, want 85", got)
-	}
-	if !finalPassed(s) {
-		t.Fatal("recovered production block changed goal success")
 	}
 }
 
@@ -617,7 +528,7 @@ func TestSuccessfulVerifiedProductionIsRecorded(t *testing.T) {
 	}
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
 	s := loadTestState(t, dir)
-	if s.ProductionCompletions != 1 || !strings.Contains(reportLine(s), "Production: 0 blocked, 1 completed") {
+	if s.ProductionCompletions != 1 || !strings.Contains(reportLine(s), "Delivery actions: 1 completed") {
 		t.Fatalf("production completion was not recorded: %#v report=%s", s, reportLine(s))
 	}
 }
@@ -702,64 +613,24 @@ func TestPassivePollingIsPenalizedButOrdinaryReadIsNot(t *testing.T) {
 	}
 }
 
-func TestRemovingDeliveryContractIsDeniedAndFailsRun(t *testing.T) {
+func TestDeliveryContractChangesAreNotBlocked(t *testing.T) {
 	dir := t.TempDir()
 	patch := "*** Begin Patch\n*** Delete File: .woodpecker.yml\n*** Update File: README.md\n@@\n-Pushing main triggers .woodpecker.yml, which deploys after convergence.\n+Run deployment commands manually.\n*** End Patch"
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "contract", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "delete", "tool_input": map[string]any{"patch": patch}})
-	if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) || !strings.Contains(string(mustJSON(out)), "automated deploy gate") {
-		t.Fatalf("contract deletion not denied: %#v", out)
-	}
-	s := loadTestState(t, dir)
-	if s.DeliveryContractFailures != 1 || !s.OpenDeliveryContractFailure || s.Revision != 0 || numericScore(s) != 0 || finalPassed(s) || !strings.Contains(reportLine(s), "Goal result: NOT VERIFIED") {
-		t.Fatalf("contract failure not durable: %#v report=%s", s, reportLine(s))
-	}
-	if !strings.Contains(string(mustJSON(out)), "Continue now with a corrected") {
-		t.Fatalf("denial encourages stopping instead of recovery: %#v", out)
-	}
-}
-
-func TestSamePatchDeliveryMigrationIsAllowed(t *testing.T) {
-	dir := t.TempDir()
-	patch := "*** Begin Patch\n*** Delete File: .woodpecker.yml\n*** Update File: README.md\n@@\n-Ship with ./ship.sh; Woodpecker deploys after convergence.\n+Ship with ship-it, then deploy with deploy-it after convergence.\n*** End Patch"
-	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "migration", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "replace", "tool_input": map[string]any{"patch": patch}})
 	if strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
-		t.Fatalf("equivalent migration denied: %#v", out)
-	}
-	if s := loadTestState(t, dir); s.DeliveryContractFailures != 0 {
-		t.Fatalf("migration marked failed: %#v", s)
+		t.Fatalf("delivery change denied: %#v", out)
 	}
 }
 
-func TestDirectDeliveryEntrypointRemovalIsDenied(t *testing.T) {
+func TestDirectDeliveryEntrypointRemovalIsNotBlocked(t *testing.T) {
 	for _, command := range []string{"rm scripts/ship.sh", "git rm -- deploy.sh", "rm .woodpecker.yml", "git rm .github/workflows/deploy.yml"} {
 		t.Run(command, func(t *testing.T) {
 			dir := t.TempDir()
 			out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": command, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "delete", "tool_input": map[string]any{"command": command}})
-			if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) || numericScore(loadTestState(t, dir)) != 0 {
-				t.Fatalf("direct removal not failed: %#v", out)
+			if strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
+				t.Fatalf("direct removal denied: %#v", out)
 			}
 		})
-	}
-}
-
-func TestCorrectedDeliveryContractEditRecoversAndCanShip(t *testing.T) {
-	dir := t.TempDir()
-	common := map[string]any{"session_id": "s", "turn_id": "recovered-contract"}
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "bad", "tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: AGENTS.md\n@@\n-Run ship-it after verification.\n+Commit however is easiest.\n*** End Patch"}})
-	corrected := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "corrected", "tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-old text\n+new useful text; ship-it remains required\n*** End Patch"}})
-	if strings.Contains(string(mustJSON(corrected)), `"permissionDecision":"deny"`) {
-		t.Fatalf("corrected edit denied: %#v", corrected)
-	}
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "corrected", "tool_response": map[string]any{"success": true}})
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
-	ship := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
-	if strings.Contains(string(mustJSON(ship)), `"permissionDecision":"deny"`) {
-		t.Fatalf("recovered verified turn could not ship: %#v", ship)
-	}
-	s := loadTestState(t, dir)
-	if s.DeliveryContractRecoveries != 1 || s.OpenDeliveryContractFailure || numericScore(s) != 77 || !strings.Contains(reportLine(s), "Goal result: SUCCESS") {
-		t.Fatalf("recovery state = %#v score=%d report=%s", s, numericScore(s), reportLine(s))
 	}
 }
 
@@ -767,7 +638,7 @@ func TestSessionGuidanceValuesCompletionOverScore(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Complete and verify the requested goal", "Goal success is the only completion metric", "Do not manufacture edits, tests, or scope", "Preserve ship and deploy gates"} {
+	for _, want := range []string{"Complete and verify the requested goal", "Goal success is the only completion metric", "Do not manufacture edits, tests, or scope", "Never block Git, ship-it, or deploy-it"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
