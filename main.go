@@ -79,6 +79,7 @@ type state struct {
 	MaxInspectionStreak         int                    `json:"max_inspection_streak"`
 	RepeatedWarnings            int                    `json:"repeated_warnings"`
 	ProductionBlocks            int                    `json:"production_blocks"`
+	ProductionCompletions       int                    `json:"production_completions"`
 	BackgroundRecords           int                    `json:"background_records"`
 	BackgroundCompletions       int                    `json:"background_completions"`
 	PassiveWaits                int                    `json:"passive_waits"`
@@ -161,7 +162,7 @@ func main() {
 			}
 			return
 		case "version":
-			fmt.Println("one-shot-tally 1.7.0")
+			fmt.Println("one-shot-tally 1.8.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
@@ -200,6 +201,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
 	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
+	fmt.Fprintln(w, "  Successful verified production calls are reported and earn one capped outcome credit.")
 	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied.")
 	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
 	fmt.Fprintln(w, "  F is reserved for failed or unverified outcomes; verified completion has a D/50 floor even when inefficient.")
@@ -283,6 +285,16 @@ func preToolUse(e event, w io.Writer) error {
 			s.MaxInspectionStreak = s.InspectionStreak
 		}
 	}
+	if isProduction && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
+		s.ProductionBlocks++
+		if err := save(p, s); err != nil {
+			return err
+		}
+		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
+			HookEventName: "PreToolUse", PermissionDecision: "deny",
+			PermissionDecisionReason: productionBlockReason(s),
+		}})
+	}
 	repeatedTest := false
 	if isTest {
 		s.Tests++
@@ -294,17 +306,6 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	if e.ToolUseID != "" {
 		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s), TodoAdd: isTodoAdd, TodoDone: isTodoDone}
-	}
-
-	if isProduction && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
-		s.ProductionBlocks++
-		if err := save(p, s); err != nil {
-			return err
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: productionBlockReason(s),
-		}})
 	}
 	var messages []string
 	if isPassiveWait {
@@ -397,6 +398,9 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.BackgroundComplete && responsePassed(e.ToolResponse) {
 			s.BackgroundCompletions++
 		}
+		if pending.Production && responsePassed(e.ToolResponse) {
+			s.ProductionCompletions++
+		}
 		if pending.ContractRecovery && responsePassed(e.ToolResponse) {
 			s.DeliveryContractRecoveries++
 			s.OpenDeliveryContractFailure = false
@@ -444,7 +448,7 @@ func reportLine(s state) string {
 	if !finalPassed(s) {
 		result = "FAIL"
 	}
-	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
+	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
 }
 
 func grade(s state) string {
@@ -460,13 +464,14 @@ func grade(s state) string {
 	if numericScore(s) < 90 {
 		return "B"
 	}
-	if s.Tests > 5 {
+	tests := completedTests(s)
+	if tests > 5 {
 		return "D"
 	}
-	if s.Tests == 5 || s.RepeatedWarnings > 1 || s.MaxInspectionStreak >= 12 {
+	if tests == 5 || s.RepeatedWarnings > 1 || s.MaxInspectionStreak >= 12 {
 		return "C"
 	}
-	if s.Tests == 1 || s.Tests == 4 || s.RepeatedWarnings == 1 || s.MaxInspectionStreak >= 8 {
+	if tests == 1 || tests == 4 || s.RepeatedWarnings == 1 || s.MaxInspectionStreak >= 8 {
 		return "B"
 	}
 	return "A"
@@ -483,23 +488,30 @@ func numericScore(s state) int {
 		return 25
 	}
 	score := 100
+	tests := completedTests(s)
 	switch {
-	case s.Tests > 5:
-		score -= 35 + (s.Tests-6)*5
-	case s.Tests == 5:
+	case tests > 5:
+		score -= 35 + (tests-6)*5
+	case tests == 5:
 		score -= 20
-	case s.Tests == 4:
+	case tests == 4:
 		score -= 10
-	case s.Tests == 1 && s.Revision > 0:
+	case tests == 1 && s.Revision > 0:
 		score -= 8
 	}
-	score -= minInt(20, s.RepeatedWarnings*8)
-	score -= minInt(30, s.ProductionBlocks*15)
+	productionPenalty := minInt(30, s.ProductionBlocks*15)
+	if finalPassed(s) {
+		productionPenalty = minInt(15, productionPenalty)
+	}
+	score -= productionPenalty
 	score -= minInt(30, s.DeliveryContractFailures*15)
 	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
 	if finalPassed(s) {
 		score += minInt(6, s.TodosParked*2)
+		if s.ProductionCompletions > 0 {
+			score += 15
+		}
 	}
 	if s.MaxInspectionStreak >= 8 {
 		score -= minInt(15, s.MaxInspectionStreak-5)
@@ -528,6 +540,8 @@ func numericScore(s state) int {
 	}
 	return score
 }
+
+func completedTests(s state) int { return s.TestPasses + s.TestFailures }
 
 func finalPassed(s state) bool {
 	if unresolvedDeliveryContract(s) || (s.TestFailures > 0 && !s.LastTestPassed) {
@@ -575,6 +589,9 @@ func removedDeliveryGates(raw json.RawMessage) []string {
 
 func passiveWait(e event, command string) bool {
 	tool := strings.ToLower(e.ToolName)
+	if strings.Contains(tool, "wait_agent") {
+		return false
+	}
 	if strings.Contains(tool, "wait") {
 		return true
 	}
@@ -1156,7 +1173,7 @@ func recordLifetime(s state) error {
 		life.VerifiedRuns++
 	}
 	life.TotalToolCalls += s.TotalCalls
-	life.TotalTests += s.Tests
+	life.TotalTests += completedTests(s)
 	life.TotalTestFailures += s.TestFailures
 	life.TotalTestMillis += s.TotalTestMillis
 	life.Grades[grade(s)]++

@@ -46,7 +46,7 @@ func TestMechanicalTallyAndGrade(t *testing.T) {
 	b, _ := os.ReadFile(files[0])
 	var s state
 	_ = json.Unmarshal(b, &s)
-	if s.Tests != 1 || s.TestPasses != 1 || s.TotalTestMillis != 12_500 || grade(s) != "B" || numericScore(s) != 92 {
+	if s.Tests != 1 || s.TestPasses != 1 || s.TotalTestMillis != 12_500 || grade(s) != "B" || numericScore(s) != 100 {
 		t.Fatalf("unexpected state: %#v grade=%s score=%d", s, grade(s), numericScore(s))
 	}
 }
@@ -68,6 +68,18 @@ func TestBlocksUnverifiedProductionButAllowsRequiredSixthTest(t *testing.T) {
 	}
 	if !strings.Contains(encoded, "exceeds the ordinary 5-run guideline") {
 		t.Fatalf("sixth test lacks pacing warning: %#v", sixth)
+	}
+}
+
+func TestDeniedCombinedTestAndProductionIsNotCountedAsTest(t *testing.T) {
+	dir := t.TempDir()
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "combined", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "combined", "tool_input": map[string]any{"command": "go test ./... && git push origin main"}})
+	if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
+		t.Fatalf("combined unverified production command was allowed: %#v", out)
+	}
+	s := loadTestState(t, dir)
+	if s.Tests != 0 || len(s.Pending) != 0 || s.ProductionBlocks != 1 {
+		t.Fatalf("denied command changed executed-test state: %#v", s)
 	}
 }
 
@@ -161,11 +173,23 @@ func TestVerifiedSmsbridgeScaleRunIsDNotF(t *testing.T) {
 		RepeatedWarnings: 1, ProductionBlocks: 4, MaxInspectionStreak: 10, PassiveWaits: 1,
 		TotalTestMillis: 11_721, MaxTestMillis: 11_640,
 	}
-	if score, gotGrade := numericScore(s), grade(s); score != 50 || gotGrade != "D" {
-		t.Fatalf("verified high-cost run = %s %d, want D 50", gotGrade, score)
+	if score, gotGrade := numericScore(s), grade(s); score != 58 || gotGrade != "D" {
+		t.Fatalf("verified high-cost run = %s %d, want D 58", gotGrade, score)
 	}
-	if report := reportLine(s); !strings.Contains(report, "Final result: PASS") || !strings.Contains(report, "Discipline score: D (50/100)") {
+	if report := reportLine(s); !strings.Contains(report, "Final result: PASS") || !strings.Contains(report, "Discipline score: D (58/100)") {
 		t.Fatalf("verified run report contradicts completion: %s", report)
+	}
+}
+
+func TestVerifiedDeliveredBetterArgoScaleRunIsC(t *testing.T) {
+	s := state{
+		TotalCalls: 73, CallCostUnits: 292, Tests: 5, TestPasses: 4,
+		Revision: 15, VerifiedRevision: 15, LastTestPassed: true, LastTestResultKnown: true,
+		RepeatedWarnings: 2, ProductionBlocks: 3, ProductionCompletions: 1, PassiveWaits: 1,
+		TotalTestMillis: 3_004, MaxTestMillis: 985, RedundantTestMillis: 2_099,
+	}
+	if score, gotGrade := numericScore(s), grade(s); score != 67 || gotGrade != "C" {
+		t.Fatalf("verified delivered run = %s %d, want C 67", gotGrade, score)
 	}
 }
 
@@ -266,6 +290,23 @@ func TestProductionBlockCanRecoverAfterFinalVerification(t *testing.T) {
 	}
 }
 
+func TestSuccessfulVerifiedProductionIsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "delivered"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "safe edit"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+	production := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
+	if strings.Contains(string(mustJSON(production)), `"permissionDecision":"deny"`) {
+		t.Fatalf("verified production command was denied: %#v", production)
+	}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
+	s := loadTestState(t, dir)
+	if s.ProductionCompletions != 1 || !strings.Contains(reportLine(s), "Production: 0 blocked, 1 completed") {
+		t.Fatalf("production completion was not recorded: %#v report=%s", s, reportLine(s))
+	}
+}
+
 func TestBackgroundRecordCompletesAndWakesWithoutPolling(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ONE_SHOT_STATE_DIR", dir)
@@ -341,7 +382,7 @@ func TestPassivePollingIsPenalizedButOrdinaryReadIsNot(t *testing.T) {
 	if numericScore(penalized) != 86 || numericScore(base) != 100 {
 		t.Fatalf("passive penalty=%d baseline=%d", numericScore(penalized), numericScore(base))
 	}
-	if passiveWait(event{ToolName: "Bash"}, "git status --short") || !passiveWait(event{ToolName: "Bash"}, "while true; do tmux has-session -t build; sleep 5; done") {
+	if passiveWait(event{ToolName: "Bash"}, "git status --short") || passiveWait(event{ToolName: "collaborationwait_agent"}, "") || !passiveWait(event{ToolName: "Bash"}, "while true; do tmux has-session -t build; sleep 5; done") {
 		t.Fatal("poll classifier over- or under-matched")
 	}
 }
