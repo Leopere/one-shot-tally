@@ -1,12 +1,49 @@
 # one-shot-tally
 
-`one-shot-tally` is a Codex-compatible one-shot hook for outcome-first delivery.
-It tracks tool use, verification state, background jobs, and durable TODOs.
-It is coaching evidence, not a full quality grader.
+`one-shot-tally` is a coach and notebook for Codex-compatible agents. It records
+observable work such as tool use, verification, delivery actions, background
+jobs, and deferred TODOs. It then returns short coaching messages while the
+agent works.
+
+The record helps you study what an agent actually did instead of relying on an
+impression of the run. Use it to find repeated calls, passive waiting,
+unnecessary test reruns, unfinished background work, and missing verification.
+The goal result remains more important than every coaching signal.
+
+This project is an example policy, not a universal grading standard. Different
+repositories, teams, and agents need different signals. Fork the repository,
+maintain your own version, and tune its messages, thresholds, weights, and
+recognized commands as your evidence changes. Keep the tests with your policy
+so a scoring change does not silently change agent behavior.
 
 Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). Licensed under [Creative Commons Attribution 4.0 International](LICENSE).
 
 When you share or adapt this work, credit ColinKnapp.com, link the license, and state whether you changed the work.
+
+## What it does
+
+- Records mechanical hook events and local outcome evidence.
+- Distinguishes verified goal completion from advisory coaching signals.
+- Keeps durable notes for deferred work and long-running background jobs.
+- Discounts bounded Spark subagent work without discounting verification.
+- Adds concise context that can steer an active agent back toward the goal.
+- Exposes human-readable and JSON reports for later comparison.
+
+It does not understand product intent, prove service health, or replace human
+review. A high coaching score does not prove that the requested goal succeeded.
+A low coaching score does not turn verified success into failure.
+
+## How to use the record
+
+Start with the goal result. Then review the coaching signals to explain how the
+agent reached that result. Look for patterns across several runs before you
+change a rule. Use `status --json` and `grade --json` when you want to compare
+runs with your own scripts.
+
+Tune one behavior at a time. Update its tests, install the new binary, and watch
+the next runs for both improvement and unintended avoidance. Coaching should
+encourage useful work without rewarding inactivity, scope growth, or work done
+only to improve a score.
 
 ## Install
 
