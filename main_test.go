@@ -156,6 +156,95 @@ func TestInspectionWarningGivesStateAwareNextAction(t *testing.T) {
 	}
 }
 
+func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
+	dir := t.TempDir()
+	start := hook(t, dir, map[string]any{
+		"session_id": "goal-session", "turn_id": "start", "hook_event_name": "PreToolUse",
+		"tool_name": "functions.create_goal", "tool_use_id": "create",
+		"tool_input": map[string]any{"objective": "Deliver the requested change"},
+	})
+	if text := string(mustJSON(start)); !strings.Contains(text, "Goal mode started") || !strings.Contains(text, "High tool-call volume is expected") {
+		t.Fatalf("goal start guidance = %#v", start)
+	}
+	hook(t, dir, map[string]any{
+		"session_id": "goal-session", "turn_id": "start", "hook_event_name": "PostToolUse",
+		"tool_name": "functions.create_goal", "tool_use_id": "create",
+		"tool_response": map[string]any{"goal": map[string]any{"status": "active"}},
+	})
+
+	continued := hook(t, dir, map[string]any{"session_id": "goal-session", "turn_id": "continued", "hook_event_name": "SessionStart"})
+	if text := string(mustJSON(continued)); !strings.Contains(text, "This is a /goal continuation") || !strings.Contains(text, "does not reduce the coaching score") {
+		t.Fatalf("goal continuation guidance = %#v", continued)
+	}
+
+	var checkpoint map[string]any
+	for i := 1; i <= 40; i++ {
+		out := hook(t, dir, map[string]any{
+			"session_id": "goal-session", "turn_id": "continued", "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("goal-%d", i),
+			"tool_input": map[string]any{"command": fmt.Sprintf("echo step-%d", i)},
+		})
+		if i == 12 && strings.Contains(string(mustJSON(out)), "tool calls") {
+			t.Fatalf("ordinary call threshold leaked into goal mode: %#v", out)
+		}
+		if i == 40 {
+			checkpoint = out
+		}
+	}
+	text := string(mustJSON(checkpoint))
+	for _, want := range []string{"Goal progress check", "not scored", "Repetition, passive waits, redundant tests, and unrelated scope still affect coaching"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("goal checkpoint missing %q: %#v", want, checkpoint)
+		}
+	}
+	p, err := statePath(event{SessionID: "goal-session", TurnID: "continued"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := loadState(p, "goal-session", "continued")
+	if err != nil || !s.GoalScoped {
+		t.Fatalf("continued state = %#v err=%v", s, err)
+	}
+
+	hook(t, dir, map[string]any{
+		"session_id": "goal-session", "turn_id": "finish", "hook_event_name": "PreToolUse",
+		"tool_name": "functions.update_goal", "tool_use_id": "finish",
+		"tool_input": map[string]any{"status": "complete"},
+	})
+	hook(t, dir, map[string]any{
+		"session_id": "goal-session", "turn_id": "finish", "hook_event_name": "PostToolUse",
+		"tool_name": "functions.update_goal", "tool_use_id": "finish",
+		"tool_response": map[string]any{"goal": map[string]any{"status": "complete"}},
+	})
+	ended := hook(t, dir, map[string]any{"session_id": "goal-session", "turn_id": "after", "hook_event_name": "SessionStart"})
+	if strings.Contains(string(mustJSON(ended)), "/goal continuation") {
+		t.Fatalf("completed goal remained active: %#v", ended)
+	}
+}
+
+func TestGoalModeDoesNotScoreToolVolume(t *testing.T) {
+	normal := state{TotalCalls: 100, CallCostUnits: 400, PassiveWaits: 1}
+	goal := normal
+	goal.GoalScoped = true
+	if got := numericScore(normal); got != 78 {
+		t.Fatalf("normal score = %d, want 78", got)
+	}
+	if got := numericScore(goal); got != 93 {
+		t.Fatalf("goal score = %d, want 93", got)
+	}
+	goalReport := reportLine(goal)
+	if !strings.Contains(goalReport, "Run mode: /goal (high tool-call volume expected)") || !strings.Contains(goalReport, "Coaching signals: 93/100 (advisory; tool-call volume not scored)") {
+		t.Fatalf("goal report = %s", goalReport)
+	}
+	normalReport := reportLine(normal)
+	if strings.Contains(normalReport, "/goal") || strings.Contains(normalReport, "volume not scored") || !strings.Contains(normalReport, "Coaching signals: 78/100 (advisory)") {
+		t.Fatalf("normal report = %s", normalReport)
+	}
+	if got := goalTransition(event{ToolName: "functions.update_goal", ToolInput: json.RawMessage(`{"status":"blocked"}`)}); got != "finish" {
+		t.Fatalf("blocked goal transition = %q", got)
+	}
+}
+
 func TestStopRequestsMechanicalLineOnce(t *testing.T) {
 	dir := t.TempDir()
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "e", "tool_input": map[string]any{"command": "patch"}})
@@ -307,7 +396,7 @@ func TestSparkCallsAreEncouragedAndDiscounted(t *testing.T) {
 func TestHelpDocumentsSparkPolicy(t *testing.T) {
 	var out bytes.Buffer
 	printHelp(&out)
-	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted"} {
+	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted", "During /goal work", "high tool-call volume is expected and is not scored"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
 		}
@@ -317,7 +406,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.4", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.8.5", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}

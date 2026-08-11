@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.4"
+const binaryVersion = "1.8.5"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -60,6 +60,7 @@ type pendingCall struct {
 	ContractRecovery   bool      `json:"contract_recovery"`
 	TodoAdd            bool      `json:"todo_add"`
 	TodoDone           bool      `json:"todo_done"`
+	GoalTransition     string    `json:"goal_transition,omitempty"`
 }
 
 type state struct {
@@ -98,6 +99,7 @@ type state struct {
 	LastTestPassed              bool                   `json:"last_test_passed"`
 	LastTestResultKnown         bool                   `json:"last_test_result_known"`
 	RecordedInLifetime          bool                   `json:"recorded_in_lifetime"`
+	GoalScoped                  bool                   `json:"goal_scoped"`
 }
 
 type backgroundJob struct {
@@ -210,6 +212,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Delegate independent, bounded, low-risk work to spark_worker subagents.")
 	fmt.Fprintln(w, "  Keep architecture, authorization, integration, and final acceptance with the primary agent.")
 	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
+	fmt.Fprintln(w, "  During /goal work, high tool-call volume is expected and is not scored; other coaching signals still apply.")
 	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
 	fmt.Fprintln(w, "  Successful verified production calls are reported and earn one capped outcome credit.")
@@ -229,9 +232,17 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
+		context := "Complete and verify the requested goal. Goal success is the only completion metric. Coaching signals can improve the path, but they never turn verified success into failure or justify stopping early. Use the smallest goal-directed next step. Do not manufacture edits, tests, or scope to improve a signal. Park useful side work with `one-shot-tally todo add TEXT --context WHY`, then return to the goal. Delegate bounded, low-risk work to spark_worker subagents when useful. Keep architecture, authorization, integration, and final acceptance with the primary agent. Preserve ship and deploy gates. For long work, record cleanup and a completion wake-up instead of polling. Efficiency never outranks completion or correctness."
+		goalActive, err := sessionGoalActive(e.SessionID)
+		if err != nil {
+			return err
+		}
+		if goalActive {
+			context += " This is a /goal continuation. High tool-call volume is expected and does not reduce the coaching score. Keep work tied to the objective. Park unrelated work."
+		}
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName:     "SessionStart",
-			AdditionalContext: "Complete and verify the requested goal. Goal success is the only completion metric. Coaching signals can improve the path, but they never turn verified success into failure or justify stopping early. Use the smallest goal-directed next step. Do not manufacture edits, tests, or scope to improve a signal. Park useful side work with `one-shot-tally todo add TEXT --context WHY`, then return to the goal. Delegate bounded, low-risk work to spark_worker subagents when useful. Keep architecture, authorization, integration, and final acceptance with the primary agent. Preserve ship and deploy gates. For long work, record cleanup and a completion wake-up instead of polling. Efficiency never outranks completion or correctness.",
+			AdditionalContext: context,
 		}})
 	case "PreToolUse":
 		return preToolUse(e, w)
@@ -257,6 +268,14 @@ func preToolUse(e event, w io.Writer) error {
 	s, err := loadState(p, e.SessionID, e.TurnID)
 	if err != nil {
 		return err
+	}
+	goalActive, err := sessionGoalActive(e.SessionID)
+	if err != nil {
+		return err
+	}
+	goalChange := goalTransition(e)
+	if goalActive || goalChange != "" {
+		s.GoalScoped = true
 	}
 	command := commandFrom(e.ToolInput)
 	isEdit := e.ToolName == "apply_patch" || e.ToolName == "Edit" || e.ToolName == "Write"
@@ -328,9 +347,12 @@ func preToolUse(e event, w io.Writer) error {
 		s.PassiveWaits++
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s), TodoAdd: isTodoAdd, TodoDone: isTodoDone}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s), TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange}
 	}
 	var messages []string
+	if goalChange == "start" {
+		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work.")
+	}
 	if isPassiveWait {
 		messages = append(messages, "Progress check: passive waiting adds no evidence. Detach long work, record its cleanup and wake-up target, then continue another goal step or stop.")
 	}
@@ -344,9 +366,17 @@ func preToolUse(e event, w io.Writer) error {
 	if s.InspectionStreak == 8 {
 		messages = append(messages, fmt.Sprintf("Progress check: 8 consecutive inspections with %d edits and %d tests this turn. Next: %s", s.Revision, s.Tests, nextAction(s)))
 	}
-	for _, threshold := range []int{12, 20, 30} {
+	thresholds := []int{12, 20, 30}
+	if s.GoalScoped {
+		thresholds = []int{40, 80, 120}
+	}
+	for _, threshold := range thresholds {
 		if previousCostUnits < threshold*4 && s.CallCostUnits >= threshold*4 {
-			messages = append(messages, fmt.Sprintf("Progress check: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
+			if s.GoalScoped {
+				messages = append(messages, fmt.Sprintf("Goal progress check: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. High tool-call volume is expected and is not scored. Keep calls tied to the objective. Repetition, passive waits, redundant tests, and unrelated scope still affect coaching. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
+			} else {
+				messages = append(messages, fmt.Sprintf("Progress check: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
+			}
 		}
 	}
 	if isTest && (s.Tests == 4 || s.Tests == 5) {
@@ -443,6 +473,11 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.TodoDone && responsePassed(e.ToolResponse) {
 			s.TodosCompleted++
 		}
+		if pending.GoalTransition != "" && responsePassed(e.ToolResponse) {
+			if err := setSessionGoalActive(e.SessionID, pending.GoalTransition == "start"); err != nil {
+				return err
+			}
+		}
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -493,7 +528,13 @@ func reportLine(s state) string {
 	if !finalPassed(s) {
 		result = "NOT VERIFIED"
 	}
-	return fmt.Sprintf("Goal result: %s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Coaching signals: %d/100 (advisory)", result, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, numericScore(s))
+	mode := ""
+	coaching := "advisory"
+	if s.GoalScoped {
+		mode = " | Run mode: /goal (high tool-call volume expected)"
+		coaching = "advisory; tool-call volume not scored"
+	}
+	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, numericScore(s), coaching)
 }
 
 func numericScore(s state) int {
@@ -535,9 +576,11 @@ func numericScore(s state) int {
 	if s.MaxInspectionStreak >= 8 {
 		score -= minInt(15, s.MaxInspectionStreak-5)
 	}
-	effectiveCalls := (s.CallCostUnits + 3) / 4
-	if effectiveCalls > 30 {
-		score -= minInt(15, (effectiveCalls-30)/3+1)
+	if !s.GoalScoped {
+		effectiveCalls := (s.CallCostUnits + 3) / 4
+		if effectiveCalls > 30 {
+			score -= minInt(15, (effectiveCalls-30)/3+1)
+		}
 	}
 	if s.TotalTestMillis > 300_000 {
 		score -= minInt(15, int((s.TotalTestMillis-300_000+119_999)/120_000))
@@ -860,7 +903,7 @@ func removeOwnedLock(path, token string) error {
 	return os.Remove(path)
 }
 
-func statePath(e event) (string, error) {
+func stateDir() (string, error) {
 	dir := os.Getenv("ONE_SHOT_STATE_DIR")
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -872,8 +915,74 @@ func statePath(e event) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	return dir, nil
+}
+
+func statePath(e event) (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256([]byte(e.SessionID + ":" + e.TurnID))
 	return filepath.Join(dir, hex.EncodeToString(sum[:12])+".json"), nil
+}
+
+func goalMarkerPath(sessionID string) (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return filepath.Join(dir, "goal-"+hex.EncodeToString(sum[:12])+".active"), nil
+}
+
+func sessionGoalActive(sessionID string) (bool, error) {
+	p, err := goalMarkerPath(sessionID)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func setSessionGoalActive(sessionID string, active bool) error {
+	p, err := goalMarkerPath(sessionID)
+	if err != nil {
+		return err
+	}
+	if active {
+		return os.WriteFile(p, []byte("active\n"), 0o600)
+	}
+	err = os.Remove(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func goalTransition(e event) string {
+	tool := strings.ToLower(strings.TrimSpace(e.ToolName))
+	if strings.HasSuffix(tool, "create_goal") {
+		return "start"
+	}
+	if !strings.HasSuffix(tool, "update_goal") {
+		return ""
+	}
+	var input struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(e.ToolInput, &input) != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(input.Status)) {
+	case "complete", "blocked":
+		return "finish"
+	default:
+		return ""
+	}
 }
 
 func isCommandTool(tool string) bool {

@@ -58,6 +58,8 @@ A blocked gate can recover only after a corrected same-edit replacement and fina
 
 ## Coaching signals
 
+- `/goal` work can continue across many turns. High tool-call volume does not lower the coaching score.
+- Goal progress checks use wider intervals. Repetition, passive waits, redundant tests, and unrelated scope still affect coaching.
 - Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
 - Five test runs is a normal pacing guide, not a hard cap.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.

@@ -27,6 +27,7 @@ one-shot-tally help|-h|--help
 - Goal result is the only completion metric.
 - `SUCCESS` marks verified completion. `NOT VERIFIED` means the goal still needs work or evidence.
 - Coaching signals are advisory. They cannot change `SUCCESS` or justify stopping early.
+- During `/goal` work, high tool-call volume is expected and is not scored. Other coaching signals still apply.
 - Delivery-gate edits are denied unless replaced in the same edit.
 - A blocked gate can recover only after corrected edit and verification.
 - Record successful verified production calls as delivery evidence. Do not treat command success as a live-service check.
