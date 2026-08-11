@@ -18,9 +18,14 @@ mkdir -p "$HOME/.codex/skills/one-shot-tally"
 install -m 0644 SKILL.md "$HOME/.codex/skills/one-shot-tally/SKILL.md"
 ```
 
-The binary reads a JSON hook event from stdin when no command is provided.
-Default state is `$HOME/.codex/state/one-shot-delivery`.
-Set `ONE_SHOT_STATE_DIR` for isolated evaluation.
+The repository binary and installed hook are separate files. A pull, build, tag, or release does not update `$HOME/.local/bin/one-shot-tally`.
+After each upgrade, rerun `go build` and `install`. Confirm that `./one-shot-tally version` matches `$HOME/.local/bin/one-shot-tally version`.
+
+Installation does not enable the hook.
+Configure [Codex hooks](https://learn.chatgpt.com/docs/hooks) to run the absolute installed path for `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`.
+Use `/hooks` in Codex to review and trust that configuration.
+
+The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
 
 ## Full command help
 

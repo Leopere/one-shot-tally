@@ -1,0 +1,69 @@
+{
+  "description": "Project-local evidence and self-critique loop.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "\"/Users/aedev/Library/Application Support/codex-intent-loop/bin/codex-intent-loop\" hook",
+            "statusMessage": "Recording project evidence",
+            "timeout": 1,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "\"/Users/aedev/Library/Application Support/codex-intent-loop/bin/codex-intent-loop\" hook",
+            "statusMessage": "Checking explicit project intent",
+            "timeout": 1,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "additionalContextLimit": 1000,
+            "command": "\"/Users/aedev/Library/Application Support/codex-intent-loop/bin/codex-intent-loop\" hook",
+            "statusMessage": "Loading project learning guidance",
+            "timeout": 1,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "\"/Users/aedev/Library/Application Support/codex-intent-loop/bin/codex-intent-loop\" hook",
+            "statusMessage": "Closing project observation",
+            "timeout": 1,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "additionalContextLimit": 1000,
+            "command": "\"/Users/aedev/Library/Application Support/codex-intent-loop/bin/codex-intent-loop\" hook",
+            "statusMessage": "Recording project intent",
+            "timeout": 1,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
