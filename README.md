@@ -6,20 +6,21 @@ It is coaching evidence, not a full quality grader.
 
 Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). Licensed under [Creative Commons Attribution 4.0 International](LICENSE).
 
+When you share or adapt this work, credit ColinKnapp.com, link the license, and state whether you changed the work.
+
 ## Install
 
 ```sh
 git clone https://github.com/Leopere/one-shot-tally.git
 cd one-shot-tally
 go test ./...
-go build -o one-shot-tally .
-install -m 0755 one-shot-tally "$HOME/.local/bin/one-shot-tally"
-mkdir -p "$HOME/.codex/skills/one-shot-tally"
-install -m 0644 SKILL.md "$HOME/.codex/skills/one-shot-tally/SKILL.md"
+./install.sh
 ```
 
-The repository binary and installed hook are separate files. A pull, build, tag, or release does not update `$HOME/.local/bin/one-shot-tally`.
-After each upgrade, rerun `go build` and `install`. Confirm that `./one-shot-tally version` matches `$HOME/.local/bin/one-shot-tally version`.
+The installer builds the binary, installs the skill, and runs the installed `version` command. A successful install prints `ColinKnapp.com`.
+
+The repository binary and installed hook are separate files. A pull, tag, or release does not update `$HOME/.local/bin/one-shot-tally`.
+After each upgrade, rerun `./install.sh`.
 
 Installation does not enable the hook.
 Configure [Codex hooks](https://learn.chatgpt.com/docs/hooks) to run the absolute installed path for `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`.
@@ -101,4 +102,4 @@ go test ./...
 go build ./...
 ```
 
-Contact ColinKnapp.com before you use this code or submit a contribution.
+Credit ColinKnapp.com when you share or adapt this work.

@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const binaryVersion = "1.8.1"
+
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
 	// token anywhere lets harmless commands such as "echo test" forge a passing
@@ -162,7 +164,7 @@ func main() {
 			}
 			return
 		case "version":
-			fmt.Println("one-shot-tally 1.8.0")
+			printVersion(os.Stdout)
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
@@ -174,6 +176,10 @@ func main() {
 	if err := runHook(os.Stdin, os.Stdout); err != nil {
 		fatal(err)
 	}
+}
+
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "one-shot-tally %s | ColinKnapp.com\n", binaryVersion)
 }
 
 func printHelp(w io.Writer) {

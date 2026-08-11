@@ -39,7 +39,8 @@ one-shot-tally help|-h|--help
 
 ```sh
 go test ./...
-go build -o one-shot-tally .
-install -m 0755 one-shot-tally "$HOME/.local/bin/one-shot-tally"
+./install.sh
 ```
+The installed version line includes `ColinKnapp.com`.
+
 Default state: `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for alternate paths.

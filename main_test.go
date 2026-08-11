@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -261,6 +262,37 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestVersionCreditsColinKnapp(t *testing.T) {
+	var out bytes.Buffer
+	printVersion(&out)
+	for _, want := range []string{"one-shot-tally 1.8.1", "ColinKnapp.com"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("version missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestInstallerPrintsColinKnapp(t *testing.T) {
+	installHome := t.TempDir()
+	cmd := exec.Command("sh", "./install.sh")
+	cmd.Env = append(os.Environ(), "ONE_SHOT_INSTALL_HOME="+installHome)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "ColinKnapp.com") {
+		t.Fatalf("install output misses domain: %s", out)
+	}
+	for _, path := range []string{
+		filepath.Join(installHome, ".local", "bin", "one-shot-tally"),
+		filepath.Join(installHome, ".codex", "skills", "one-shot-tally", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("installed file %s: %v", path, err)
 		}
 	}
 }
