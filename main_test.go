@@ -29,6 +29,26 @@ func hook(t *testing.T, dir string, input map[string]any) map[string]any {
 	return result
 }
 
+func TestHookBookkeepingFailureDoesNotBreakToolUse(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(statePath, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ONE_SHOT_STATE_DIR", statePath)
+	input, _ := json.Marshal(map[string]any{
+		"session_id": "s", "turn_id": "t", "hook_event_name": "PreToolUse",
+		"tool_name": "Bash", "tool_use_id": "tool", "tool_input": map[string]any{"command": "git status --short"},
+	})
+	var output, diagnostics bytes.Buffer
+	runHookFailOpen(bytes.NewReader(input), &output, &diagnostics)
+	if strings.TrimSpace(output.String()) != "{}" {
+		t.Fatalf("fail-open output = %q", output.String())
+	}
+	if !strings.Contains(diagnostics.String(), "bookkeeping failed; tool use continues") {
+		t.Fatalf("missing diagnostic: %q", diagnostics.String())
+	}
+}
+
 func TestMechanicalTallyAndGrade(t *testing.T) {
 	dir := t.TempDir()
 	base := map[string]any{"session_id": "s", "turn_id": "t", "hook_event_name": "PreToolUse", "tool_name": "Bash"}
@@ -271,7 +291,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.2", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.8.3", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}

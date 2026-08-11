@@ -27,6 +27,7 @@ Configure [Codex hooks](https://learn.chatgpt.com/docs/hooks) to run the absolut
 Use `/hooks` in Codex to review and trust that configuration.
 
 The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
+If bookkeeping fails, the hook reports the error and lets the Codex tool continue.
 
 ## Full command help
 

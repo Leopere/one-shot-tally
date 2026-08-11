@@ -34,6 +34,7 @@ one-shot-tally help|-h|--help
 - `complete` wakes the originating tmux pane with resume-and-cleanup guidance.
 - Park out-of-scope work with `todo add TEXT --context WHY`; rewards apply only after current verification.
 - Do not optimize the score at the cost of correctness.
+- If tally bookkeeping fails, the hook reports the error and lets tool use continue.
 
 ## Build and install
 

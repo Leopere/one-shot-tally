@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.2"
+const binaryVersion = "1.8.3"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -174,8 +174,13 @@ func main() {
 			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|todo <add|list|done>|version|help]"))
 		}
 	}
-	if err := runHook(os.Stdin, os.Stdout); err != nil {
-		fatal(err)
+	runHookFailOpen(os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runHookFailOpen(r io.Reader, w, diagnostics io.Writer) {
+	if err := runHook(r, w); err != nil {
+		fmt.Fprintln(diagnostics, "one-shot-tally: bookkeeping failed; tool use continues:", err)
+		_ = writeJSON(w, hookOutput{})
 	}
 }
 
@@ -218,7 +223,10 @@ func printHelp(w io.Writer) {
 func runHook(r io.Reader, w io.Writer) error {
 	var e event
 	if err := json.NewDecoder(r).Decode(&e); err != nil {
-		return err
+		if errors.Is(err, io.EOF) {
+			return writeJSON(w, hookOutput{})
+		}
+		return writeJSON(w, hookOutput{})
 	}
 	switch e.HookEventName {
 	case "SessionStart":
