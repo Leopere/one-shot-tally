@@ -109,7 +109,7 @@ func main() {
 			}
 			return
 		case "version":
-			fmt.Println("one-shot-tally 1.1.0")
+			fmt.Println("one-shot-tally 1.2.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
@@ -137,6 +137,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Delegate independent, bounded, low-risk work to spark_worker subagents.")
 	fmt.Fprintln(w, "  Keep architecture, authorization, integration, and final acceptance with the primary agent.")
 	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
+	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -214,16 +215,6 @@ func preToolUse(e event, w io.Writer) error {
 			PermissionDecisionReason: "Production action blocked: the current code revision does not have a recorded passing verification. Run the final required check once, then retry.",
 		}})
 	}
-	if isTest && s.Tests > 5 {
-		if err := save(p, s); err != nil {
-			return err
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: fmt.Sprintf("Test run %d exceeds the five-run budget. Stop and reassess the diagnosis and change boundary before requesting an explicit exception.", s.Tests),
-		}})
-	}
-
 	var messages []string
 	if repeats == 3 {
 		s.RepeatedWarnings++
@@ -239,6 +230,9 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	if isTest && (s.Tests == 4 || s.Tests == 5) {
 		messages = append(messages, fmt.Sprintf("Observed: this is test run %d of the ordinary 5-run maximum. Next: %s", s.Tests, nextAction(s)))
+	}
+	if isTest && s.Tests > 5 {
+		messages = append(messages, fmt.Sprintf("Observed: test run %d exceeds the ordinary 5-run guideline. Required verification remains allowed, but this run will reduce the discipline score. Next: %s", s.Tests, nextAction(s)))
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -351,7 +345,7 @@ func grade(s state) string {
 }
 
 func numericScore(s state) int {
-	if s.ProductionBlocks > 0 || (s.TestFailures > 0 && !s.LastTestPassed) {
+	if s.TestFailures > 0 && !s.LastTestPassed {
 		return 0
 	}
 	if s.Revision > 0 && (s.Tests == 0 || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
@@ -369,6 +363,7 @@ func numericScore(s state) int {
 		score -= 8
 	}
 	score -= minInt(20, s.RepeatedWarnings*8)
+	score -= minInt(30, s.ProductionBlocks*15)
 	if s.MaxInspectionStreak >= 8 {
 		score -= minInt(15, s.MaxInspectionStreak-5)
 	}

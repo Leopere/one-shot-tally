@@ -28,6 +28,8 @@ Run `one-shot-tally --help` for the installed binary's current help.
 - Good Spark work includes targeted searches, small fixtures, focused documentation, formatting, and narrow mechanical edits with explicit acceptance criteria.
 - Keep requirements, architecture, authorization, credentials, destructive or external actions, integration, and final acceptance with the primary agent.
 - Spark calls cost 0.25 of a normal call for tool-pressure scoring. Test limits, verification requirements, safety gates, and correctness penalties are never discounted.
+- Five test runs is the normal pacing guideline. More tests reduce the discipline score but remain allowed when correctness requires them.
+- A blocked production attempt costs points but is recoverable after the current revision passes verification. The production action itself remains blocked until then.
 - Prefer at most two useful subagents at first. Do not create delegation work merely to improve the score.
 
 ## Build and install

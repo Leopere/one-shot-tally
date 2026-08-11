@@ -51,7 +51,7 @@ func TestMechanicalTallyAndGrade(t *testing.T) {
 	}
 }
 
-func TestBlocksUnverifiedProductionAndSixthTest(t *testing.T) {
+func TestBlocksUnverifiedProductionButAllowsRequiredSixthTest(t *testing.T) {
 	dir := t.TempDir()
 	production := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "p", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "p1", "tool_input": map[string]any{"command": "git " + "push origin main"}})
 	if !strings.Contains(string(mustJSON(production)), `"permissionDecision":"deny"`) {
@@ -62,8 +62,12 @@ func TestBlocksUnverifiedProductionAndSixthTest(t *testing.T) {
 	for i := 1; i <= 6; i++ {
 		sixth = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "six", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": fmt.Sprintf("test-%d", i), "tool_input": map[string]any{"command": "pytest suite"}})
 	}
-	if !strings.Contains(string(mustJSON(sixth)), `"permissionDecision":"deny"`) {
-		t.Fatalf("sixth test not denied: %#v", sixth)
+	encoded := string(mustJSON(sixth))
+	if strings.Contains(encoded, `"permissionDecision":"deny"`) {
+		t.Fatalf("required sixth test was denied: %#v", sixth)
+	}
+	if !strings.Contains(encoded, "exceeds the ordinary 5-run guideline") {
+		t.Fatalf("sixth test lacks pacing warning: %#v", sixth)
 	}
 }
 
@@ -216,5 +220,18 @@ func TestPatchContentsCannotForgeCommandEvents(t *testing.T) {
 	_ = json.Unmarshal(b, &s)
 	if s.Tests != 0 || s.ProductionBlocks != 0 || s.Revision != 1 {
 		t.Fatalf("patch contents treated as shell commands: %#v", s)
+	}
+}
+
+func TestProductionBlockCanRecoverAfterFinalVerification(t *testing.T) {
+	s := state{
+		Revision: 1, VerifiedRevision: 1, Tests: 2, TestPasses: 2,
+		LastTestPassed: true, LastTestResultKnown: true, ProductionBlocks: 1,
+	}
+	if got := numericScore(s); got != 85 {
+		t.Fatalf("recovered production block score = %d, want 85", got)
+	}
+	if got := grade(s); got != "B" {
+		t.Fatalf("recovered production block grade = %s, want B", got)
 	}
 }
