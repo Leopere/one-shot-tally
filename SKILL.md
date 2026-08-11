@@ -39,6 +39,7 @@ Run `one-shot-tally --help` for the installed binary's current help.
 - Do not watch or repeatedly poll long-running work. Record it with `one-shot-tally background record ID --cleanup CMD`, arrange `one-shot-tally background complete ID` at job exit, and continue useful work or stop.
 - `record` captures the current `$TMUX_PANE` by default. `complete` wakes that pane with a resume-and-cleanup message. Use `--tmux-target PANE` when the originating agent is in a different known pane.
 - Successful records receive a small capped reward. Passive `wait`, polling, `watch`, `tail -f`, sleep loops, and repeated tmux status checks reduce the score but remain allowed when genuinely necessary.
+- Preserve the complete delivery contract. Removing `ship-it`, `ship.sh`, `deploy-it`, Woodpecker deployment steps, or GitHub workflow entrypoints without adding an equivalent ship/deploy gate in the same edit is denied and makes the turn an immediate, non-recoverable FAIL. Do not bypass the failure by testing and shipping afterward; use a fresh turn with the contract preserved.
 
 ## Build and install
 

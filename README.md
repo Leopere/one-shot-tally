@@ -54,6 +54,7 @@ State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DI
 - A blocked production attempt is penalized, but a later verified revision can recover from it.
 - Recognized Spark calls cost `0.25` normal calls for tool-pressure scoring. Tests and correctness gates receive no discount.
 - A successful background record earns back up to five points per job (ten total). Passive waits cost seven points each, capped at 25, so recording a job never fully erases a later polling penalty.
+- Removing a ship gate (`ship-it`, `ship.sh`) or automated deploy gate (`deploy-it`, Woodpecker, or GitHub workflows) without an equivalent same-edit replacement is denied. The attempt permanently fails that turn and prevents it from shipping, even if tests later pass.
 
 ## Background work without polling
 
@@ -81,6 +82,7 @@ When run inside tmux, `record` captures `$TMUX_PANE`. `complete` marks the job c
 | Passing command | Provides executable evidence | Exit code zero does not prove assertions ran or were meaningful | Documented limitation; teams should pair this with their real test contract |
 | Background reward | Encourages cleanup and wake-up records | Agents could create records for trivial jobs to farm points | Bonus is capped at ten points and cannot bypass verification gates |
 | Passive-wait penalty | Discourages polling long jobs | A bounded wait can occasionally be the least risky action | Warning and capped score penalty; never blocks the wait |
+| Delivery-contract guard | Prevents agents from claiming efficiency by deleting ship/deploy gates | Delivery systems sometimes migrate legitimately | Uncompensated removal is denied and fails the turn; a same-edit equivalent replacement is allowed |
 
 The score is intentionally heuristic. It should prompt a review, not replace code review, security analysis, test coverage, or engineering judgment. If people optimize the number instead of the outcome, remove the hook or adjust the policy rather than adding more scoring rules.
 

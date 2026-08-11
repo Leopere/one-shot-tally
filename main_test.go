@@ -315,3 +315,69 @@ func TestPassivePollingIsPenalizedButOrdinaryReadIsNot(t *testing.T) {
 		t.Fatal("poll classifier over- or under-matched")
 	}
 }
+
+func TestRemovingDeliveryContractIsDeniedAndFailsRun(t *testing.T) {
+	dir := t.TempDir()
+	patch := "*** Begin Patch\n*** Delete File: .woodpecker.yml\n*** Update File: README.md\n@@\n-Pushing main triggers .woodpecker.yml, which deploys after convergence.\n+Run deployment commands manually.\n*** End Patch"
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "contract", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "delete", "tool_input": map[string]any{"patch": patch}})
+	if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) || !strings.Contains(string(mustJSON(out)), "automated deploy gate") {
+		t.Fatalf("contract deletion not denied: %#v", out)
+	}
+	s := loadTestState(t, dir)
+	if s.DeliveryContractFailures != 1 || numericScore(s) != 0 || grade(s) != "F" || !strings.Contains(reportLine(s), "Final result: FAIL") {
+		t.Fatalf("contract failure not durable: %#v report=%s", s, reportLine(s))
+	}
+}
+
+func TestSamePatchDeliveryMigrationIsAllowed(t *testing.T) {
+	dir := t.TempDir()
+	patch := "*** Begin Patch\n*** Delete File: .woodpecker.yml\n*** Update File: README.md\n@@\n-Ship with ./ship.sh; Woodpecker deploys after convergence.\n+Ship with ship-it, then deploy with deploy-it after convergence.\n*** End Patch"
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "migration", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "replace", "tool_input": map[string]any{"patch": patch}})
+	if strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
+		t.Fatalf("equivalent migration denied: %#v", out)
+	}
+	if s := loadTestState(t, dir); s.DeliveryContractFailures != 0 {
+		t.Fatalf("migration marked failed: %#v", s)
+	}
+}
+
+func TestDirectDeliveryEntrypointRemovalIsDenied(t *testing.T) {
+	for _, command := range []string{"rm scripts/ship.sh", "git rm -- deploy.sh", "rm .woodpecker.yml", "git rm .github/workflows/deploy.yml"} {
+		t.Run(command, func(t *testing.T) {
+			dir := t.TempDir()
+			out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": command, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "delete", "tool_input": map[string]any{"command": command}})
+			if !strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) || numericScore(loadTestState(t, dir)) != 0 {
+				t.Fatalf("direct removal not failed: %#v", out)
+			}
+		})
+	}
+}
+
+func TestFailedDeliveryContractTurnCannotShipAfterPassingTest(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "failed-contract"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "bad", "tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: AGENTS.md\n@@\n-Run ship-it after verification.\n+Commit however is easiest.\n*** End Patch"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+	ship := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
+	if !strings.Contains(string(mustJSON(ship)), `"permissionDecision":"deny"`) || !strings.Contains(string(mustJSON(ship)), "instant failure") {
+		t.Fatalf("failed turn could ship: %#v", ship)
+	}
+}
+
+func loadTestState(t *testing.T, dir string) state {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("state files: %v err=%v", files, err)
+	}
+	b, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s state
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

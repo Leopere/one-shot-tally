@@ -20,13 +20,16 @@ var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
 	// token anywhere lets harmless commands such as "echo test" forge a passing
 	// verification for the current revision.
-	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
-	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
-	productionRE         = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
-	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
-	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
-	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
-	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
+	testRE                 = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
+	readRE                 = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
+	productionRE           = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
+	passiveWaitRE          = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
+	detachedTmuxRE         = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
+	backgroundRecordRE     = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
+	backgroundCompleteRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
+	shipGateRE             = regexp.MustCompile(`(?i)\bship-it\b|(^|[/\s` + "`" + `])ship(\.project)?\.sh\b`)
+	deployGateRE           = regexp.MustCompile(`(?i)\bdeploy-it\b|(^|[/\s` + "`" + `])deploy\.sh\b|\.woodpecker\.ya?ml|\.github/workflows|workflow_dispatch|woodpecker[^\n]*(deploy|trigger|push|build|success|converg)|(deploy|trigger|push|build|success|converg)[^\n]*woodpecker`)
+	directContractDeleteRE = regexp.MustCompile(`(?i)(^|[;&|])\s*(git\s+rm|rm)\b[^;\n]*(ship-it|deploy-it|ship(\.project)?\.sh|deploy\.sh|\.woodpecker\.ya?ml|\.github/workflows)`)
 )
 
 type event struct {
@@ -52,35 +55,36 @@ type pendingCall struct {
 }
 
 type state struct {
-	StateVersion          int                    `json:"state_version"`
-	SessionID             string                 `json:"session_id"`
-	TurnID                string                 `json:"turn_id"`
-	UpdatedAt             time.Time              `json:"updated_at"`
-	TotalCalls            int                    `json:"total_calls"`
-	CallCostUnits         int                    `json:"call_cost_units"`
-	SparkCalls            int                    `json:"spark_calls"`
-	Tests                 int                    `json:"tests"`
-	TestPasses            int                    `json:"test_passes"`
-	TestFailures          int                    `json:"test_failures"`
-	TotalTestMillis       int64                  `json:"total_test_millis"`
-	MaxTestMillis         int64                  `json:"max_test_millis"`
-	RedundantTestMillis   int64                  `json:"redundant_test_millis"`
-	Revision              int                    `json:"revision"`
-	VerifiedRevision      int                    `json:"verified_revision"`
-	InspectionStreak      int                    `json:"inspection_streak"`
-	MaxInspectionStreak   int                    `json:"max_inspection_streak"`
-	RepeatedWarnings      int                    `json:"repeated_warnings"`
-	ProductionBlocks      int                    `json:"production_blocks"`
-	BackgroundRecords     int                    `json:"background_records"`
-	BackgroundCompletions int                    `json:"background_completions"`
-	PassiveWaits          int                    `json:"passive_waits"`
-	ToolCounts            map[string]int         `json:"tool_counts"`
-	Fingerprints          map[string]int         `json:"fingerprints"`
-	TestFingerprints      map[string]int         `json:"test_fingerprints"`
-	Pending               map[string]pendingCall `json:"pending"`
-	LastTestPassed        bool                   `json:"last_test_passed"`
-	LastTestResultKnown   bool                   `json:"last_test_result_known"`
-	RecordedInLifetime    bool                   `json:"recorded_in_lifetime"`
+	StateVersion             int                    `json:"state_version"`
+	SessionID                string                 `json:"session_id"`
+	TurnID                   string                 `json:"turn_id"`
+	UpdatedAt                time.Time              `json:"updated_at"`
+	TotalCalls               int                    `json:"total_calls"`
+	CallCostUnits            int                    `json:"call_cost_units"`
+	SparkCalls               int                    `json:"spark_calls"`
+	Tests                    int                    `json:"tests"`
+	TestPasses               int                    `json:"test_passes"`
+	TestFailures             int                    `json:"test_failures"`
+	TotalTestMillis          int64                  `json:"total_test_millis"`
+	MaxTestMillis            int64                  `json:"max_test_millis"`
+	RedundantTestMillis      int64                  `json:"redundant_test_millis"`
+	Revision                 int                    `json:"revision"`
+	VerifiedRevision         int                    `json:"verified_revision"`
+	InspectionStreak         int                    `json:"inspection_streak"`
+	MaxInspectionStreak      int                    `json:"max_inspection_streak"`
+	RepeatedWarnings         int                    `json:"repeated_warnings"`
+	ProductionBlocks         int                    `json:"production_blocks"`
+	BackgroundRecords        int                    `json:"background_records"`
+	BackgroundCompletions    int                    `json:"background_completions"`
+	PassiveWaits             int                    `json:"passive_waits"`
+	DeliveryContractFailures int                    `json:"delivery_contract_failures"`
+	ToolCounts               map[string]int         `json:"tool_counts"`
+	Fingerprints             map[string]int         `json:"fingerprints"`
+	TestFingerprints         map[string]int         `json:"test_fingerprints"`
+	Pending                  map[string]pendingCall `json:"pending"`
+	LastTestPassed           bool                   `json:"last_test_passed"`
+	LastTestResultKnown      bool                   `json:"last_test_result_known"`
+	RecordedInLifetime       bool                   `json:"recorded_in_lifetime"`
 }
 
 type backgroundJob struct {
@@ -134,7 +138,7 @@ func main() {
 			}
 			return
 		case "version":
-			fmt.Println("one-shot-tally 1.3.0")
+			fmt.Println("one-shot-tally 1.4.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
@@ -169,6 +173,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
 	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
+	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied and fails the run.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -207,6 +212,8 @@ func preToolUse(e event, w io.Writer) error {
 	isPassiveWait := passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
+	removedGates := removedDeliveryGates(e.ToolInput)
+	contractFailure := (isEdit && len(removedGates) > 0) || (isCommand && directContractDeleteRE.MatchString(command))
 
 	previousCostUnits := s.CallCostUnits
 	s.TotalCalls++
@@ -241,15 +248,29 @@ func preToolUse(e event, w io.Writer) error {
 	if e.ToolUseID != "" {
 		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete}
 	}
+	if contractFailure {
+		s.DeliveryContractFailures++
+		if err := save(p, s); err != nil {
+			return err
+		}
+		detail := strings.Join(removedGates, " and ")
+		if detail == "" {
+			detail = "delivery contract"
+		}
+		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
+			HookEventName: "PreToolUse", PermissionDecision: "deny",
+			PermissionDecisionReason: "Instant process failure: this action removes the " + detail + " without adding an equivalent gate in the same edit. Preserve or safely replace both ship-it and deploy-it stages; this turn cannot ship.",
+		}})
+	}
 
-	if isProduction && (s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
+	if isProduction && (s.DeliveryContractFailures > 0 || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
 		s.ProductionBlocks++
 		if err := save(p, s); err != nil {
 			return err
 		}
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: "Production action blocked: the current code revision does not have a recorded passing verification. Run the final required check once, then retry.",
+			PermissionDecisionReason: productionBlockReason(s),
 		}})
 	}
 	var messages []string
@@ -284,6 +305,13 @@ func preToolUse(e event, w io.Writer) error {
 		return writeJSON(w, hookOutput{})
 	}
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}})
+}
+
+func productionBlockReason(s state) string {
+	if s.DeliveryContractFailures > 0 {
+		return "Production action blocked: this turn attempted to remove a required ship or deploy gate and is an instant failure. Preserve the delivery contract and ship from a fresh turn."
+	}
+	return "Production action blocked: the current code revision does not have a recorded passing verification. Run the final required check once, then retry."
 }
 
 func nextAction(s state) string {
@@ -366,10 +394,10 @@ func stop(e event, w io.Writer) error {
 
 func reportLine(s state) string {
 	result := "PASS"
-	if s.TestFailures > 0 && !s.LastTestPassed {
+	if s.DeliveryContractFailures > 0 || (s.TestFailures > 0 && !s.LastTestPassed) {
 		result = "FAIL"
 	}
-	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, result, grade(s), numericScore(s))
+	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Delivery contract failures: %d | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.DeliveryContractFailures, result, grade(s), numericScore(s))
 }
 
 func grade(s state) string {
@@ -398,6 +426,9 @@ func grade(s state) string {
 }
 
 func numericScore(s state) int {
+	if s.DeliveryContractFailures > 0 {
+		return 0
+	}
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return 0
 	}
@@ -442,6 +473,43 @@ func numericScore(s state) int {
 		return 100
 	}
 	return score
+}
+
+func removedDeliveryGates(raw json.RawMessage) []string {
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	var removed, added []string
+	if patch, ok := fields["patch"].(string); ok {
+		for _, line := range strings.Split(patch, "\n") {
+			switch {
+			case strings.HasPrefix(line, "*** Delete File:"):
+				removed = append(removed, strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File:")))
+			case strings.HasPrefix(line, "*** Add File:"):
+				added = append(added, strings.TrimSpace(strings.TrimPrefix(line, "*** Add File:")))
+			case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+				removed = append(removed, strings.TrimPrefix(line, "-"))
+			case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+				added = append(added, strings.TrimPrefix(line, "+"))
+			}
+		}
+	}
+	if oldText, ok := fields["old_string"].(string); ok {
+		removed = append(removed, oldText)
+	}
+	if newText, ok := fields["new_string"].(string); ok {
+		added = append(added, newText)
+	}
+	oldText, newText := strings.Join(removed, "\n"), strings.Join(added, "\n")
+	var missing []string
+	if shipGateRE.MatchString(oldText) && !shipGateRE.MatchString(newText) {
+		missing = append(missing, "ship gate")
+	}
+	if deployGateRE.MatchString(oldText) && !deployGateRE.MatchString(newText) {
+		missing = append(missing, "automated deploy gate")
+	}
+	return missing
 }
 
 func passiveWait(e event, command string) bool {
