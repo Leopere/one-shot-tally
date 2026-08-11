@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.1"
+const binaryVersion = "1.8.2"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -237,7 +238,16 @@ func runHook(r io.Reader, w io.Writer) error {
 }
 
 func preToolUse(e event, w io.Writer) error {
-	p, s, err := load(e)
+	p, err := statePath(e)
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	s, err := loadState(p, e.SessionID, e.TurnID)
 	if err != nil {
 		return err
 	}
@@ -372,7 +382,16 @@ func nextAction(s state) string {
 }
 
 func postToolUse(e event, w io.Writer) error {
-	p, s, err := load(e)
+	p, err := statePath(e)
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	s, err := loadState(p, e.SessionID, e.TurnID)
 	if err != nil {
 		return err
 	}
@@ -425,7 +444,16 @@ func postToolUse(e event, w io.Writer) error {
 }
 
 func stop(e event, w io.Writer) error {
-	p, s, err := load(e)
+	p, err := statePath(e)
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	s, err := loadState(p, e.SessionID, e.TurnID)
 	if err != nil {
 		return err
 	}
@@ -709,18 +737,21 @@ func containsFailure(v any) bool {
 	return false
 }
 
-func load(e event) (string, state, error) {
-	p, err := statePath(e)
-	if err != nil {
-		return "", state{}, err
-	}
-	s := state{SessionID: e.SessionID, TurnID: e.TurnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
-	b, err := os.ReadFile(p)
+func loadState(path string, sessionID, turnID string) (state, error) {
+	s := emptyState(sessionID, turnID)
+	b, err := os.ReadFile(path)
 	if err == nil {
-		err = json.Unmarshal(b, &s)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", state{}, err
+		recovered, decodeErr := decodeState(b, &s)
+		if recovered || decodeErr != nil {
+			if quarantineErr := quarantineState(path); quarantineErr != nil {
+				return state{}, quarantineErr
+			}
+		}
+		if decodeErr != nil {
+			s = emptyState(sessionID, turnID)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return state{}, err
 	}
 	if s.ToolCounts == nil {
 		s.ToolCounts = map[string]int{}
@@ -749,7 +780,30 @@ func load(e event) (string, state, error) {
 	if s.CallCostUnits == 0 && s.TotalCalls > 0 {
 		s.CallCostUnits = s.TotalCalls * 4
 	}
-	return p, s, nil
+	return s, nil
+}
+
+func emptyState(sessionID, turnID string) state {
+	return state{SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
+}
+
+func decodeState(b []byte, s *state) (bool, error) {
+	var decoded state
+	if err := json.Unmarshal(b, &decoded); err == nil {
+		*s = decoded
+		return false, nil
+	}
+	decoded = state{}
+	if err := json.NewDecoder(bytes.NewReader(b)).Decode(&decoded); err != nil {
+		return false, err
+	}
+	*s = decoded
+	return true, nil
+}
+
+func quarantineState(path string) error {
+	backup := fmt.Sprintf("%s.corrupt-%d", path, time.Now().UTC().UnixNano())
+	return os.Rename(path, backup)
 }
 
 func save(path string, s state) error {
@@ -758,11 +812,67 @@ func save(path string, s state) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func acquireStateLock(path string) (func() error, error) {
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			token := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+			if _, err := f.WriteString(token); err != nil {
+				_ = f.Close()
+				_ = os.Remove(lockPath)
+				return nil, err
+			}
+			if err := f.Close(); err != nil {
+				_ = os.Remove(lockPath)
+				return nil, err
+			}
+			return func() error { return removeOwnedLock(lockPath, token) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		info, statErr := os.Stat(lockPath)
+		if statErr == nil && time.Since(info.ModTime()) > time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for state lock: %s", filepath.Base(path))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func removeOwnedLock(path, token string) error {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if string(b) != token {
+		return nil
+	}
+	return os.Remove(path)
 }
 
 func statePath(e event) (string, error) {
@@ -1150,7 +1260,7 @@ func printLatest(asJSON bool) error {
 		return err
 	}
 	var s state
-	if err := json.Unmarshal(b, &s); err != nil {
+	if _, err := decodeState(b, &s); err != nil {
 		return err
 	}
 	life, _ := loadLifetime()

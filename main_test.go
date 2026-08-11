@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -269,10 +271,88 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.1", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.8.2", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
+	}
+}
+
+func TestConcurrentHooksPreserveEveryCallAndValidJSON(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	const calls = 32
+	errCh := make(chan error, calls)
+	var wg sync.WaitGroup
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			input, err := json.Marshal(map[string]any{
+				"session_id": "concurrent", "turn_id": "same-turn", "hook_event_name": "PreToolUse",
+				"tool_name": "Bash", "tool_use_id": fmt.Sprintf("call-%d", i),
+				"tool_input": map[string]any{"command": fmt.Sprintf("git status --short %d", i)},
+			})
+			if err == nil {
+				err = runHook(bytes.NewReader(input), io.Discard)
+			}
+			errCh <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := loadTestState(t, dir)
+	if s.TotalCalls != calls || len(s.Pending) != calls {
+		t.Fatalf("concurrent state lost calls: total=%d pending=%d", s.TotalCalls, len(s.Pending))
+	}
+}
+
+func TestHookRecoversAndPreservesCorruptState(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		contents  func(state) []byte
+		wantCalls int
+	}{
+		{name: "valid prefix with trailing fragment", wantCalls: 5, contents: func(s state) []byte {
+			b, _ := json.Marshal(s)
+			return append(b, []byte(`":2,"started_at":"stale"}`)...)
+		}},
+		{name: "unrecoverable object", wantCalls: 1, contents: func(state) []byte { return []byte(`{"broken"`) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("ONE_SHOT_STATE_DIR", dir)
+			e := event{SessionID: "recover", TurnID: test.name}
+			path, err := statePath(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := emptyState(e.SessionID, e.TurnID)
+			original.TotalCalls = 4
+			if err := os.WriteFile(path, test.contents(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			input, _ := json.Marshal(map[string]any{
+				"session_id": e.SessionID, "turn_id": e.TurnID, "hook_event_name": "PreToolUse",
+				"tool_name": "Bash", "tool_use_id": "recovered", "tool_input": map[string]any{"command": "git status --short"},
+			})
+			if err := runHook(bytes.NewReader(input), io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			s := loadTestState(t, dir)
+			if s.TotalCalls != test.wantCalls {
+				t.Fatalf("calls=%d, want %d", s.TotalCalls, test.wantCalls)
+			}
+			backups, err := filepath.Glob(path + ".corrupt-*")
+			if err != nil || len(backups) != 1 {
+				t.Fatalf("corrupt backup=%v err=%v", backups, err)
+			}
+		})
 	}
 }
 
