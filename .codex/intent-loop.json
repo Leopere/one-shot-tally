@@ -1,9 +1,0 @@
-{
-  "cycle_interval_seconds": 60,
-  "minimum_new_events": 6,
-  "max_jobs_per_day": 6,
-  "critic_timeout_seconds": 300,
-  "promotion_occurrences": 3,
-  "max_batch_events": 80,
-  "retain_prompt_text": false
-}
