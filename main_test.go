@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,7 +50,7 @@ func TestHookBookkeepingFailureDoesNotBreakToolUse(t *testing.T) {
 	}
 }
 
-func TestMechanicalTallyAndGrade(t *testing.T) {
+func TestMechanicalTallyAndCoachingScore(t *testing.T) {
 	dir := t.TempDir()
 	base := map[string]any{"session_id": "s", "turn_id": "t", "hook_event_name": "PreToolUse", "tool_name": "Bash"}
 	for i := 1; i <= 3; i++ {
@@ -69,8 +70,8 @@ func TestMechanicalTallyAndGrade(t *testing.T) {
 	b, _ := os.ReadFile(files[0])
 	var s state
 	_ = json.Unmarshal(b, &s)
-	if s.Tests != 1 || s.TestPasses != 1 || s.TotalTestMillis != 12_500 || grade(s) != "B" || numericScore(s) != 100 {
-		t.Fatalf("unexpected state: %#v grade=%s score=%d", s, grade(s), numericScore(s))
+	if s.Tests != 1 || s.TestPasses != 1 || s.TotalTestMillis != 12_500 || numericScore(s) != 100 {
+		t.Fatalf("unexpected state: %#v coaching_score=%d", s, numericScore(s))
 	}
 }
 
@@ -89,7 +90,7 @@ func TestBlocksUnverifiedProductionButAllowsRequiredSixthTest(t *testing.T) {
 	if strings.Contains(encoded, `"permissionDecision":"deny"`) {
 		t.Fatalf("required sixth test was denied: %#v", sixth)
 	}
-	if !strings.Contains(encoded, "exceeds the ordinary 5-run guideline") {
+	if !strings.Contains(encoded, "exceeds the ordinary 5-run guide") || !strings.Contains(encoded, "Continue required verification") {
 		t.Fatalf("sixth test lacks pacing warning: %#v", sixth)
 	}
 }
@@ -150,7 +151,7 @@ func TestInspectionWarningGivesStateAwareNextAction(t *testing.T) {
 	if !strings.Contains(encoded, "8 consecutive inspections with 0 edits and 0 tests") {
 		t.Fatalf("warning lacks observed state: %#v", out)
 	}
-	if !strings.Contains(encoded, "choose the highest-confidence change, and make one coherent edit") {
+	if !strings.Contains(encoded, "smallest step that advances the requested goal") || !strings.Contains(encoded, "edit only when evidence supports a change") {
 		t.Fatalf("warning lacks actionable recommendation: %#v", out)
 	}
 }
@@ -158,8 +159,10 @@ func TestInspectionWarningGivesStateAwareNextAction(t *testing.T) {
 func TestStopRequestsMechanicalLineOnce(t *testing.T) {
 	dir := t.TempDir()
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "e", "tool_input": map[string]any{"command": "patch"}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "last_assistant_message": "Done"})
-	if out["decision"] != "block" || !strings.Contains(out["reason"].(string), "Tool calls:") {
+	if out["decision"] != "block" || !strings.Contains(out["reason"].(string), "Goal result: SUCCESS") {
 		t.Fatalf("unexpected stop output: %#v", out)
 	}
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
@@ -170,75 +173,98 @@ func TestStopRequestsMechanicalLineOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if life.Runs != 1 || life.AverageScore != 25 || life.Grades["F"] != 1 {
+	if life.Runs != 1 || life.VerifiedRuns != 1 {
 		t.Fatalf("unexpected lifetime: %#v", life)
+	}
+}
+
+func TestUnverifiedStopContinuesTowardSuccessBeforeLifetimeRecord(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "last_assistant_message": "Done"})
+	reason, _ := out["reason"].(string)
+	if out["decision"] != "block" || !strings.Contains(reason, "not verified yet") || !strings.Contains(reason, "smallest goal-directed step") || strings.Contains(reason, "Append this mechanical") {
+		t.Fatalf("unverified stop did not continue the goal: %#v", out)
+	}
+	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("continuing stop recorded a premature lifetime result: %v", err)
+	}
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
+	if out["decision"] == "block" {
+		t.Fatalf("continued stop looped: %#v", out)
+	}
+	life, err := loadLifetime()
+	if err != nil || life.Runs != 1 || life.VerifiedRuns != 1 {
+		t.Fatalf("continued success was not recorded: %#v err=%v", life, err)
 	}
 }
 
 func TestRequiredTestingOutweighsEfficiency(t *testing.T) {
 	unverified := state{Revision: 1}
-	if grade(unverified) != "F" || numericScore(unverified) != 25 {
-		t.Fatalf("unverified edit rewarded: grade=%s score=%d", grade(unverified), numericScore(unverified))
+	if finalPassed(unverified) || numericScore(unverified) != 25 {
+		t.Fatalf("unverified edit reported success: score=%d", numericScore(unverified))
 	}
-	if !strings.Contains(reportLine(unverified), "Final result: FAIL") {
-		t.Fatalf("unverified edit reported PASS: %s", reportLine(unverified))
+	if !strings.Contains(reportLine(unverified), "Goal result: NOT VERIFIED") {
+		t.Fatalf("unverified edit reported success: %s", reportLine(unverified))
 	}
 	verified := state{Revision: 1, VerifiedRevision: 1, Tests: 2, TestPasses: 2, LastTestPassed: true, LastTestResultKnown: true}
-	if grade(verified) != "A" || numericScore(verified) != 100 {
-		t.Fatalf("verified efficient run not rewarded: grade=%s score=%d", grade(verified), numericScore(verified))
+	if !finalPassed(verified) || numericScore(verified) != 100 {
+		t.Fatalf("verified efficient run not successful: score=%d", numericScore(verified))
 	}
 }
 
-func TestVerifiedSmsbridgeScaleRunIsDNotF(t *testing.T) {
+func TestVerifiedSmsbridgeScaleRunRemainsSuccess(t *testing.T) {
 	s := state{
 		TotalCalls: 80, CallCostUnits: 320, Tests: 2, TestPasses: 2,
 		Revision: 14, VerifiedRevision: 14, LastTestPassed: true, LastTestResultKnown: true,
 		RepeatedWarnings: 1, ProductionBlocks: 4, MaxInspectionStreak: 10, PassiveWaits: 1,
 		TotalTestMillis: 11_721, MaxTestMillis: 11_640,
 	}
-	if score, gotGrade := numericScore(s), grade(s); score != 58 || gotGrade != "D" {
-		t.Fatalf("verified high-cost run = %s %d, want D 58", gotGrade, score)
+	if score := numericScore(s); score != 58 || !finalPassed(s) {
+		t.Fatalf("verified high-cost run lost success: score=%d", score)
 	}
-	if report := reportLine(s); !strings.Contains(report, "Final result: PASS") || !strings.Contains(report, "Discipline score: D (58/100)") {
+	if report := reportLine(s); !strings.HasPrefix(report, "Goal result: SUCCESS") || !strings.Contains(report, "Coaching signals: 58/100 (advisory)") || strings.Contains(report, "Discipline score") {
 		t.Fatalf("verified run report contradicts completion: %s", report)
 	}
 }
 
-func TestVerifiedDeliveredBetterArgoScaleRunIsC(t *testing.T) {
+func TestVerifiedDeliveredBetterArgoScaleRunRemainsSuccess(t *testing.T) {
 	s := state{
 		TotalCalls: 73, CallCostUnits: 292, Tests: 5, TestPasses: 4,
 		Revision: 15, VerifiedRevision: 15, LastTestPassed: true, LastTestResultKnown: true,
 		RepeatedWarnings: 2, ProductionBlocks: 3, ProductionCompletions: 1, PassiveWaits: 1,
 		TotalTestMillis: 3_004, MaxTestMillis: 985, RedundantTestMillis: 2_099,
 	}
-	if score, gotGrade := numericScore(s), grade(s); score != 67 || gotGrade != "C" {
-		t.Fatalf("verified delivered run = %s %d, want C 67", gotGrade, score)
+	if score := numericScore(s); score != 67 || !finalPassed(s) || !strings.HasPrefix(reportLine(s), "Goal result: SUCCESS") {
+		t.Fatalf("verified delivered run lost success: score=%d report=%s", score, reportLine(s))
 	}
 }
 
-func TestCorrectnessFailureStillGetsF(t *testing.T) {
+func TestUnverifiedOutcomeDoesNotReportSuccess(t *testing.T) {
 	for _, s := range []state{
 		{Revision: 1},
 		{Revision: 1, Tests: 1, TestFailures: 1, LastTestResultKnown: true},
 		{OpenDeliveryContractFailure: true},
 	} {
-		if finalPassed(s) || grade(s) != "F" || !strings.Contains(reportLine(s), "Final result: FAIL") {
-			t.Fatalf("true failure escaped F: %#v report=%s", s, reportLine(s))
+		if finalPassed(s) || !strings.Contains(reportLine(s), "Goal result: NOT VERIFIED") {
+			t.Fatalf("unverified state reported success: %#v report=%s", s, reportLine(s))
 		}
 	}
 }
 
 func TestLongRedundantTestChainsLoseScore(t *testing.T) {
 	efficient := state{Revision: 1, VerifiedRevision: 1, Tests: 2, TestPasses: 2, LastTestPassed: true, TotalTestMillis: 240_000, MaxTestMillis: 180_000}
-	if numericScore(efficient) != 100 || grade(efficient) != "A" {
-		t.Fatalf("necessary test time penalized too early: %d %s", numericScore(efficient), grade(efficient))
+	if numericScore(efficient) != 100 || !finalPassed(efficient) {
+		t.Fatalf("necessary test time penalized too early: %d", numericScore(efficient))
 	}
 	redundant := efficient
 	redundant.Tests = 4
 	redundant.TotalTestMillis = 840_000
 	redundant.RedundantTestMillis = 600_000
-	if numericScore(redundant) >= 70 || grade(redundant) == "A" || grade(redundant) == "B" {
-		t.Fatalf("redundant chain insufficiently penalized: %d %s", numericScore(redundant), grade(redundant))
+	if numericScore(redundant) >= 70 || !finalPassed(redundant) {
+		t.Fatalf("redundant chain signal or success is wrong: %d", numericScore(redundant))
 	}
 }
 
@@ -291,7 +317,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.8.3", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.8.4", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -417,8 +443,8 @@ func TestProductionBlockCanRecoverAfterFinalVerification(t *testing.T) {
 	if got := numericScore(s); got != 85 {
 		t.Fatalf("recovered production block score = %d, want 85", got)
 	}
-	if got := grade(s); got != "B" {
-		t.Fatalf("recovered production block grade = %s, want B", got)
+	if !finalPassed(s) {
+		t.Fatal("recovered production block changed goal success")
 	}
 }
 
@@ -484,7 +510,7 @@ func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
 	}
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "record", "tool_response": map[string]any{"exit_code": 0}})
 	wait := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "wait", "tool_use_id": "wait", "tool_input": map[string]any{}})
-	if !strings.Contains(string(mustJSON(wait)), "passive waiting or polling") {
+	if guidance := string(mustJSON(wait)); !strings.Contains(guidance, "passive waiting adds no evidence") || !strings.Contains(guidance, "record its cleanup and wake-up target") {
 		t.Fatalf("wait lacks corrective guidance: %#v", wait)
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
@@ -502,7 +528,7 @@ func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
 func TestDetachedTmuxWithoutRecordGetsGuidance(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "tmux", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "tmux", "tool_input": map[string]any{"command": "tmux new-session -d -s build 'make all'"}})
-	if !strings.Contains(string(mustJSON(out)), "without a one-shot-tally background record") {
+	if guidance := string(mustJSON(out)); !strings.Contains(guidance, "record this detached job") || !strings.Contains(guidance, "without polling") {
 		t.Fatalf("missing detached-job guidance: %#v", out)
 	}
 }
@@ -527,7 +553,7 @@ func TestRemovingDeliveryContractIsDeniedAndFailsRun(t *testing.T) {
 		t.Fatalf("contract deletion not denied: %#v", out)
 	}
 	s := loadTestState(t, dir)
-	if s.DeliveryContractFailures != 1 || !s.OpenDeliveryContractFailure || s.Revision != 0 || numericScore(s) != 0 || grade(s) != "F" || !strings.Contains(reportLine(s), "Final result: FAIL") {
+	if s.DeliveryContractFailures != 1 || !s.OpenDeliveryContractFailure || s.Revision != 0 || numericScore(s) != 0 || finalPassed(s) || !strings.Contains(reportLine(s), "Goal result: NOT VERIFIED") {
 		t.Fatalf("contract failure not durable: %#v report=%s", s, reportLine(s))
 	}
 	if !strings.Contains(string(mustJSON(out)), "Continue now with a corrected") {
@@ -575,7 +601,7 @@ func TestCorrectedDeliveryContractEditRecoversAndCanShip(t *testing.T) {
 		t.Fatalf("recovered verified turn could not ship: %#v", ship)
 	}
 	s := loadTestState(t, dir)
-	if s.DeliveryContractRecoveries != 1 || s.OpenDeliveryContractFailure || numericScore(s) != 77 || !strings.Contains(reportLine(s), "Final result: PASS") {
+	if s.DeliveryContractRecoveries != 1 || s.OpenDeliveryContractFailure || numericScore(s) != 77 || !strings.Contains(reportLine(s), "Goal result: SUCCESS") {
 		t.Fatalf("recovery state = %#v score=%d report=%s", s, numericScore(s), reportLine(s))
 	}
 }
@@ -584,7 +610,7 @@ func TestSessionGuidanceValuesCompletionOverScore(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Complete the requested outcome", "do not optimize a score by doing nothing", "Spend the time necessary", "recovery remains eligible to ship"} {
+	for _, want := range []string{"Complete and verify the requested goal", "Goal success is the only completion metric", "Do not manufacture edits, tests, or scope", "Preserve ship and deploy gates"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}

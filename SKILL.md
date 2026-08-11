@@ -24,7 +24,9 @@ one-shot-tally help|-h|--help
 
 - Complete the requested outcome first.
 - Final response must come from a verified edited revision.
-- PASS marks verified completion. `F` marks a failed or unverified outcome. Grade is discipline.
+- Goal result is the only completion metric.
+- `SUCCESS` marks verified completion. `NOT VERIFIED` means the goal still needs work or evidence.
+- Coaching signals are advisory. They cannot change `SUCCESS` or justify stopping early.
 - Delivery-gate edits are denied unless replaced in the same edit.
 - A blocked gate can recover only after corrected edit and verification.
 - Record successful verified production calls as delivery evidence. Do not treat command success as a live-service check.
@@ -33,7 +35,7 @@ one-shot-tally help|-h|--help
 - Before long jobs: `background record`; on exit: `background complete`.
 - `complete` wakes the originating tmux pane with resume-and-cleanup guidance.
 - Park out-of-scope work with `todo add TEXT --context WHY`; rewards apply only after current verification.
-- Do not optimize the score at the cost of correctness.
+- Use the smallest step that advances the requested goal. Do not manufacture edits or expand scope for a score.
 - If tally bookkeeping fails, the hook reports the error and lets tool use continue.
 
 ## Build and install

@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.8.3"
+const binaryVersion = "1.8.4"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -120,16 +120,15 @@ type todoItem struct {
 }
 
 type lifetime struct {
-	Runs              int            `json:"runs"`
-	TotalScore        int            `json:"total_score"`
-	AverageScore      float64        `json:"average_score"`
-	VerifiedRuns      int            `json:"verified_runs"`
-	TotalToolCalls    int            `json:"total_tool_calls"`
-	TotalTests        int            `json:"total_tests"`
-	TotalTestFailures int            `json:"total_test_failures"`
-	TotalTestMillis   int64          `json:"total_test_millis"`
-	Grades            map[string]int `json:"grades"`
-	UpdatedAt         time.Time      `json:"updated_at"`
+	Runs              int       `json:"runs"`
+	TotalScore        int       `json:"total_score"`
+	AverageScore      float64   `json:"average_score"`
+	VerifiedRuns      int       `json:"verified_runs"`
+	TotalToolCalls    int       `json:"total_tool_calls"`
+	TotalTests        int       `json:"total_tests"`
+	TotalTestFailures int       `json:"total_test_failures"`
+	TotalTestMillis   int64     `json:"total_test_millis"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type hookSpecificOutput struct {
@@ -232,7 +231,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	case "SessionStart":
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName:     "SessionStart",
-			AdditionalContext: "Complete the requested outcome; do not optimize a score by doing nothing, narrowing scope, or stopping at the first warning. Spend the time necessary for evidence, implementation, and final verification, while avoiding repeated work and passive waiting. When useful out-of-scope work appears, park it with `one-shot-tally todo add TEXT --context WHY`, then return to the current goal; a small capped reward applies only after the current outcome is verified. Delegate independent, bounded, low-risk work to spark_worker subagents when useful; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. A denied ship/deploy-contract removal changes nothing: immediately make a corrected contract-preserving edit, verify it, and continue; recovery remains eligible to ship with a score penalty. For long work, record cleanup and a completion wake-up instead of polling. The compiled hook mechanically counts outcomes and process signals; efficiency never outranks completion or correctness.",
+			AdditionalContext: "Complete and verify the requested goal. Goal success is the only completion metric. Coaching signals can improve the path, but they never turn verified success into failure or justify stopping early. Use the smallest goal-directed next step. Do not manufacture edits, tests, or scope to improve a signal. Park useful side work with `one-shot-tally todo add TEXT --context WHY`, then return to the goal. Delegate bounded, low-risk work to spark_worker subagents when useful. Keep architecture, authorization, integration, and final acceptance with the primary agent. Preserve ship and deploy gates. For long work, record cleanup and a completion wake-up instead of polling. Efficiency never outranks completion or correctness.",
 		}})
 	case "PreToolUse":
 		return preToolUse(e, w)
@@ -333,28 +332,28 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	var messages []string
 	if isPassiveWait {
-		messages = append(messages, "Observed: passive waiting or polling adds no new evidence and reduces the discipline score. Next: detach the work, record its cleanup and wake-up target with one-shot-tally background record, arrange one-shot-tally background complete at exit, then do other useful work or stop.")
+		messages = append(messages, "Progress check: passive waiting adds no evidence. Detach long work, record its cleanup and wake-up target, then continue another goal step or stop.")
 	}
 	if isCommand && detachedTmuxRE.MatchString(command) && !isBackgroundRecord {
-		messages = append(messages, "Observed: a detached tmux job was started without a one-shot-tally background record. Next: record the job ID, cleanup command, and originating tmux pane so completion can wake the agent instead of requiring polling.")
+		messages = append(messages, "Progress check: record this detached job, its cleanup command, and its tmux pane. Completion can then wake the agent without polling.")
 	}
 	if repeats == 3 {
 		s.RepeatedWarnings++
-		messages = append(messages, fmt.Sprintf("Observed: %s received the same input 3 times, so the latest call added no new evidence. Next: %s", e.ToolName, nextAction(s)))
+		messages = append(messages, fmt.Sprintf("Progress check: %s received the same input 3 times. Use the existing result. Next: %s", e.ToolName, nextAction(s)))
 	}
 	if s.InspectionStreak == 8 {
-		messages = append(messages, fmt.Sprintf("Observed: 8 consecutive inspections with %d edits and %d tests this turn. Next: %s", s.Revision, s.Tests, nextAction(s)))
+		messages = append(messages, fmt.Sprintf("Progress check: 8 consecutive inspections with %d edits and %d tests this turn. Next: %s", s.Revision, s.Tests, nextAction(s)))
 	}
 	for _, threshold := range []int{12, 20, 30} {
 		if previousCostUnits < threshold*4 && s.CallCostUnits >= threshold*4 {
-			messages = append(messages, fmt.Sprintf("Observed: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
+			messages = append(messages, fmt.Sprintf("Progress check: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
 		}
 	}
 	if isTest && (s.Tests == 4 || s.Tests == 5) {
-		messages = append(messages, fmt.Sprintf("Observed: this is test run %d of the ordinary 5-run maximum. Next: %s", s.Tests, nextAction(s)))
+		messages = append(messages, fmt.Sprintf("Progress check: this is test run %d of the ordinary 5-run guide. Next: %s", s.Tests, nextAction(s)))
 	}
 	if isTest && s.Tests > 5 {
-		messages = append(messages, fmt.Sprintf("Observed: test run %d exceeds the ordinary 5-run guideline. Required verification remains allowed, but this run will reduce the discipline score. Next: %s", s.Tests, nextAction(s)))
+		messages = append(messages, fmt.Sprintf("Progress check: test run %d exceeds the ordinary 5-run guide. Continue required verification, but avoid redundant reruns. Next: %s", s.Tests, nextAction(s)))
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -381,11 +380,11 @@ func nextAction(s state) string {
 	case s.LastTestResultKnown && !s.LastTestPassed:
 		return "use the failure output to diagnose one cause, make one complete correction, then rerun only the affected check and final contract"
 	case s.Revision == 0:
-		return "summarize the evidence already gathered, choose the highest-confidence change, and make one coherent edit; inspect again only for a specific unanswered question"
+		return "use the evidence already gathered to take the smallest step that advances the requested goal; edit only when evidence supports a change, otherwise answer or request the missing direction"
 	case s.VerifiedRevision == s.Revision && s.LastTestPassed:
-		return "the current revision is verified; stop investigating and report the completed outcome unless a stated requirement is still unmet"
+		return "the current goal is verified; report success and stop unless a stated requirement remains unmet"
 	default:
-		return "finish the current change boundary, review it once, and run the narrow check plus required final contract without another inspection loop"
+		return "finish the smallest current goal step, review it once, and run the narrow check plus required final contract"
 	}
 }
 
@@ -465,6 +464,15 @@ func stop(e event, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	line := reportLine(s)
+	stewardship := ""
+	if s.BackgroundRecords > s.BackgroundCompletions {
+		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
+	}
+	hasWork := s.Tests > 0 || s.Revision > 0
+	if hasWork && !finalPassed(s) && !e.StopHookActive {
+		return writeJSON(w, hookOutput{Decision: "block", Reason: "The requested goal is not verified yet. Continue with the smallest goal-directed step. Fix the known failure or run the required verification. Do not expand scope; park useful side work for later." + stewardship})
+	}
 	if !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
 			return err
@@ -474,49 +482,18 @@ func stop(e event, w io.Writer) error {
 			return err
 		}
 	}
-	line := reportLine(s)
-	stewardship := ""
-	if s.BackgroundRecords > s.BackgroundCompletions {
-		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
-	}
-	if (s.Tests > 0 || s.Revision > 0) && !strings.Contains(e.LastAssistantMsg, "Discipline score:") && !e.StopHookActive {
+	if hasWork && !strings.Contains(e.LastAssistantMsg, "Goal result: SUCCESS") && !e.StopHookActive {
 		return writeJSON(w, hookOutput{Decision: "block", Reason: "Append this mechanical verification line to the final response without additional investigation: " + line + stewardship})
 	}
 	return writeJSON(w, hookOutput{SystemMessage: line + stewardship})
 }
 
 func reportLine(s state) string {
-	result := "PASS"
+	result := "SUCCESS"
 	if !finalPassed(s) {
-		result = "FAIL"
+		result = "NOT VERIFIED"
 	}
-	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
-}
-
-func grade(s state) string {
-	if !finalPassed(s) {
-		return "F"
-	}
-	if numericScore(s) < 65 {
-		return "D"
-	}
-	if numericScore(s) < 80 {
-		return "C"
-	}
-	if numericScore(s) < 90 {
-		return "B"
-	}
-	tests := completedTests(s)
-	if tests > 5 {
-		return "D"
-	}
-	if tests == 5 || s.RepeatedWarnings > 1 || s.MaxInspectionStreak >= 12 {
-		return "C"
-	}
-	if tests == 1 || tests == 4 || s.RepeatedWarnings == 1 || s.MaxInspectionStreak >= 8 {
-		return "B"
-	}
-	return "A"
+	return fmt.Sprintf("Goal result: %s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Production: %d blocked, %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Delivery contract: %d blocked, %d recovered | Coaching signals: %d/100 (advisory)", result, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionBlocks, s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, s.DeliveryContractFailures, s.DeliveryContractRecoveries, numericScore(s))
 }
 
 func numericScore(s state) int {
@@ -1273,11 +1250,11 @@ func printLatest(asJSON bool) error {
 	}
 	life, _ := loadLifetime()
 	if asJSON {
-		return writeJSON(os.Stdout, map[string]any{"state": s, "grade": grade(s), "score": numericScore(s), "report": reportLine(s), "lifetime": life})
+		return writeJSON(os.Stdout, map[string]any{"state": s, "success": finalPassed(s), "coaching_score": numericScore(s), "report": reportLine(s), "lifetime": life})
 	}
 	fmt.Println(reportLine(s))
 	if life.Runs > 0 {
-		fmt.Printf("Lifetime: %d runs | Average: %.1f/100 | Verified: %d/%d | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.Runs, life.AverageScore, life.VerifiedRuns, life.Runs, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
+		fmt.Printf("Lifetime: Verified goals: %d/%d | Coaching average: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
 	}
 	return nil
 }
@@ -1286,9 +1263,6 @@ func recordLifetime(s state) error {
 	life, err := loadLifetime()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
-	}
-	if life.Grades == nil {
-		life.Grades = map[string]int{}
 	}
 	life.Runs++
 	life.TotalScore += numericScore(s)
@@ -1300,7 +1274,6 @@ func recordLifetime(s state) error {
 	life.TotalTests += completedTests(s)
 	life.TotalTestFailures += s.TestFailures
 	life.TotalTestMillis += s.TotalTestMillis
-	life.Grades[grade(s)]++
 	life.UpdatedAt = time.Now().UTC()
 	b, err := json.Marshal(life)
 	if err != nil {

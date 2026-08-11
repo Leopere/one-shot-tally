@@ -45,26 +45,27 @@ one-shot-tally version
 one-shot-tally help|-h|--help
 ```
 
-## Outcome, verification, and grade
+## Goal result and coaching
 
-- PASS is a verified completed outcome.
-- Grade is process discipline.
-- `F` is for failed or unverified final outcome.
-- A verified final outcome cannot fall below `D/50`.
+- Goal result is the only completion metric.
+- `SUCCESS` means no edit was required or the current revision passed required verification.
+- `NOT VERIFIED` means the goal still needs work or evidence.
+- The coaching score is advisory. It cannot change `SUCCESS`.
 
 The hook denies production and delivery commands until the active revision passes verification.
 Removing contract-preserving delivery gates (`ship-it`, `ship.sh`, `deploy-it`, Woodpecker, GitHub workflow deploy entries) is denied before edits.
 A blocked gate can recover only after a corrected same-edit replacement and final verification.
 
-## Score model and limits
+## Coaching signals
 
-- Repeated identical calls, long inspection streaks, excessive test runs, and passive waits reduce score.
+- Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
 - Five test runs is a normal pacing guide, not a hard cap.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
 - A denied command does not count as an executed test.
 - After final verification, blocked production attempts retain one capped penalty. A successful production call earns one capped credit.
 - Command success does not prove service health.
-- Warnings guide the agent. The related work signal changes the numeric score.
+- Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
+- Park useful work that is outside the requested goal. Return to it later.
 
 ## Background workflow
 
