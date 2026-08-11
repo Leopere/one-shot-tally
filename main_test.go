@@ -235,3 +235,83 @@ func TestProductionBlockCanRecoverAfterFinalVerification(t *testing.T) {
 		t.Fatalf("recovered production block grade = %s, want B", got)
 	}
 }
+
+func TestBackgroundRecordCompletesAndWakesWithoutPolling(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%7")
+	logPath := filepath.Join(dir, "tmux.log")
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmuxPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_TMUX_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := backgroundCommand([]string{"record", "compile-docs", "--cleanup", "tmux kill-session -t compile-docs"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "background complete compile-docs") {
+		t.Fatalf("record lacks completion instruction: %s", out.String())
+	}
+	jobs, err := loadBackgroundJobs()
+	if err != nil || jobs["compile-docs"].Cleanup != "tmux kill-session -t compile-docs" {
+		t.Fatalf("job record = %#v, err=%v", jobs, err)
+	}
+	out.Reset()
+	if err := backgroundCommand([]string{"complete", "compile-docs"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ = loadBackgroundJobs()
+	if jobs["compile-docs"].CompletedAt.IsZero() || !strings.Contains(out.String(), "cleanup:") {
+		t.Fatalf("job not completed with cleanup reminder: %#v %s", jobs, out.String())
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(log), "send-keys -l -t %7 Background job compile-docs completed") || !strings.Contains(string(log), "send-keys -t %7 Enter") {
+		t.Fatalf("origin pane was not woken: %q err=%v", log, err)
+	}
+}
+
+func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "background"}
+	record := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "record", "tool_input": map[string]any{"command": "one-shot-tally background record docs --cleanup 'tmux kill-session -t docs'"}})
+	if strings.Contains(string(mustJSON(record)), "passive waiting") {
+		t.Fatalf("record misclassified as wait: %#v", record)
+	}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "record", "tool_response": map[string]any{"exit_code": 0}})
+	wait := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "wait", "tool_use_id": "wait", "tool_input": map[string]any{}})
+	if !strings.Contains(string(mustJSON(wait)), "passive waiting or polling") {
+		t.Fatalf("wait lacks corrective guidance: %#v", wait)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	b, _ := os.ReadFile(files[0])
+	var s state
+	_ = json.Unmarshal(b, &s)
+	if s.BackgroundRecords != 1 || s.PassiveWaits != 1 || numericScore(s) != 98 {
+		t.Fatalf("stewardship accounting = %#v score=%d", s, numericScore(s))
+	}
+	if report := reportLine(s); !strings.Contains(report, "1 recorded, 0 completed; passive waits: 1") {
+		t.Fatalf("report omits stewardship: %q", report)
+	}
+}
+
+func TestDetachedTmuxWithoutRecordGetsGuidance(t *testing.T) {
+	dir := t.TempDir()
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "tmux", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "tmux", "tool_input": map[string]any{"command": "tmux new-session -d -s build 'make all'"}})
+	if !strings.Contains(string(mustJSON(out)), "without a one-shot-tally background record") {
+		t.Fatalf("missing detached-job guidance: %#v", out)
+	}
+}
+
+func TestPassivePollingIsPenalizedButOrdinaryReadIsNot(t *testing.T) {
+	base := state{Revision: 1, VerifiedRevision: 1, Tests: 2, TestPasses: 2, LastTestPassed: true, LastTestResultKnown: true}
+	penalized := base
+	penalized.PassiveWaits = 2
+	if numericScore(penalized) != 86 || numericScore(base) != 100 {
+		t.Fatalf("passive penalty=%d baseline=%d", numericScore(penalized), numericScore(base))
+	}
+	if passiveWait(event{ToolName: "Bash"}, "git status --short") || !passiveWait(event{ToolName: "Bash"}, "while true; do tmux has-session -t build; sleep 5; done") {
+		t.Fatal("poll classifier over- or under-matched")
+	}
+}

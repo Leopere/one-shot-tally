@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -19,9 +20,13 @@ var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
 	// token anywhere lets harmless commands such as "echo test" forge a passing
 	// verification for the current revision.
-	testRE       = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
-	readRE       = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
-	productionRE = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
+	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
+	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
+	productionRE         = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
+	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
+	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
+	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
+	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
 )
 
 type event struct {
@@ -37,40 +42,55 @@ type event struct {
 }
 
 type pendingCall struct {
-	Test         bool      `json:"test"`
-	Production   bool      `json:"production"`
-	Revision     int       `json:"revision"`
-	StartedAt    time.Time `json:"started_at"`
-	RepeatedTest bool      `json:"repeated_test"`
+	Test               bool      `json:"test"`
+	Production         bool      `json:"production"`
+	Revision           int       `json:"revision"`
+	StartedAt          time.Time `json:"started_at"`
+	RepeatedTest       bool      `json:"repeated_test"`
+	BackgroundRecord   bool      `json:"background_record"`
+	BackgroundComplete bool      `json:"background_complete"`
 }
 
 type state struct {
-	StateVersion        int                    `json:"state_version"`
-	SessionID           string                 `json:"session_id"`
-	TurnID              string                 `json:"turn_id"`
-	UpdatedAt           time.Time              `json:"updated_at"`
-	TotalCalls          int                    `json:"total_calls"`
-	CallCostUnits       int                    `json:"call_cost_units"`
-	SparkCalls          int                    `json:"spark_calls"`
-	Tests               int                    `json:"tests"`
-	TestPasses          int                    `json:"test_passes"`
-	TestFailures        int                    `json:"test_failures"`
-	TotalTestMillis     int64                  `json:"total_test_millis"`
-	MaxTestMillis       int64                  `json:"max_test_millis"`
-	RedundantTestMillis int64                  `json:"redundant_test_millis"`
-	Revision            int                    `json:"revision"`
-	VerifiedRevision    int                    `json:"verified_revision"`
-	InspectionStreak    int                    `json:"inspection_streak"`
-	MaxInspectionStreak int                    `json:"max_inspection_streak"`
-	RepeatedWarnings    int                    `json:"repeated_warnings"`
-	ProductionBlocks    int                    `json:"production_blocks"`
-	ToolCounts          map[string]int         `json:"tool_counts"`
-	Fingerprints        map[string]int         `json:"fingerprints"`
-	TestFingerprints    map[string]int         `json:"test_fingerprints"`
-	Pending             map[string]pendingCall `json:"pending"`
-	LastTestPassed      bool                   `json:"last_test_passed"`
-	LastTestResultKnown bool                   `json:"last_test_result_known"`
-	RecordedInLifetime  bool                   `json:"recorded_in_lifetime"`
+	StateVersion          int                    `json:"state_version"`
+	SessionID             string                 `json:"session_id"`
+	TurnID                string                 `json:"turn_id"`
+	UpdatedAt             time.Time              `json:"updated_at"`
+	TotalCalls            int                    `json:"total_calls"`
+	CallCostUnits         int                    `json:"call_cost_units"`
+	SparkCalls            int                    `json:"spark_calls"`
+	Tests                 int                    `json:"tests"`
+	TestPasses            int                    `json:"test_passes"`
+	TestFailures          int                    `json:"test_failures"`
+	TotalTestMillis       int64                  `json:"total_test_millis"`
+	MaxTestMillis         int64                  `json:"max_test_millis"`
+	RedundantTestMillis   int64                  `json:"redundant_test_millis"`
+	Revision              int                    `json:"revision"`
+	VerifiedRevision      int                    `json:"verified_revision"`
+	InspectionStreak      int                    `json:"inspection_streak"`
+	MaxInspectionStreak   int                    `json:"max_inspection_streak"`
+	RepeatedWarnings      int                    `json:"repeated_warnings"`
+	ProductionBlocks      int                    `json:"production_blocks"`
+	BackgroundRecords     int                    `json:"background_records"`
+	BackgroundCompletions int                    `json:"background_completions"`
+	PassiveWaits          int                    `json:"passive_waits"`
+	ToolCounts            map[string]int         `json:"tool_counts"`
+	Fingerprints          map[string]int         `json:"fingerprints"`
+	TestFingerprints      map[string]int         `json:"test_fingerprints"`
+	Pending               map[string]pendingCall `json:"pending"`
+	LastTestPassed        bool                   `json:"last_test_passed"`
+	LastTestResultKnown   bool                   `json:"last_test_result_known"`
+	RecordedInLifetime    bool                   `json:"recorded_in_lifetime"`
+}
+
+type backgroundJob struct {
+	ID          string    `json:"id"`
+	Cleanup     string    `json:"cleanup"`
+	TmuxTarget  string    `json:"tmux_target,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
+	TurnID      string    `json:"turn_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
 
 type lifetime struct {
@@ -108,14 +128,19 @@ func main() {
 				fatal(err)
 			}
 			return
+		case "background":
+			if err := backgroundCommand(os.Args[2:], os.Stdout); err != nil {
+				fatal(err)
+			}
+			return
 		case "version":
-			fmt.Println("one-shot-tally 1.2.0")
+			fmt.Println("one-shot-tally 1.3.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
 			return
 		default:
-			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|version|help]"))
+			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|version|help]"))
 		}
 	}
 	if err := runHook(os.Stdin, os.Stdout); err != nil {
@@ -130,6 +155,11 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally                  process a hook event from stdin")
 	fmt.Fprintln(w, "  one-shot-tally status [--json]  show the latest run and lifetime totals")
 	fmt.Fprintln(w, "  one-shot-tally grade [--json]   alias for status")
+	fmt.Fprintln(w, "  one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]")
+	fmt.Fprintln(w, "                                  record cleanup and the agent wake-up target")
+	fmt.Fprintln(w, "  one-shot-tally background complete ID")
+	fmt.Fprintln(w, "                                  mark complete and wake the originating tmux pane")
+	fmt.Fprintln(w, "  one-shot-tally background list  list recorded background jobs and cleanup commands")
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)
@@ -138,6 +168,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Keep architecture, authorization, integration, and final acceptance with the primary agent.")
 	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
 	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
+	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -149,7 +180,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	case "SessionStart":
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName:     "SessionStart",
-			AdditionalContext: "Use one-shot delivery: gather evidence once, implement a substantial pass, keep output bounded, and avoid repeated agentic loops. Delegate independent, bounded, low-risk work to spark_worker subagents when possible; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. The compiled one-shot-tally hook mechanically counts tools, revisions, tests, and verification state.",
+			AdditionalContext: "Use one-shot delivery: gather evidence once, implement a substantial pass, keep output bounded, and avoid repeated agentic loops. Delegate independent, bounded, low-risk work to spark_worker subagents when possible; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. For long work, detach it, record its cleanup and wake-up target with one-shot-tally background record, and have completion call one-shot-tally background complete; do not poll or passively watch it. The compiled hook mechanically counts tools, revisions, tests, verification state, background stewardship, and passive waits.",
 		}})
 	case "PreToolUse":
 		return preToolUse(e, w)
@@ -173,6 +204,9 @@ func preToolUse(e event, w io.Writer) error {
 	isTest := isCommand && testRE.MatchString(command)
 	isProduction := isCommand && productionRE.MatchString(command)
 	isRead := readRE.MatchString(command)
+	isPassiveWait := passiveWait(e, command)
+	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
+	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
 
 	previousCostUnits := s.CallCostUnits
 	s.TotalCalls++
@@ -201,8 +235,11 @@ func preToolUse(e event, w io.Writer) error {
 		s.TestFingerprints[fp]++
 		repeatedTest = s.TestFingerprints[fp] > 1
 	}
+	if isPassiveWait {
+		s.PassiveWaits++
+	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete}
 	}
 
 	if isProduction && (s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
@@ -216,6 +253,12 @@ func preToolUse(e event, w io.Writer) error {
 		}})
 	}
 	var messages []string
+	if isPassiveWait {
+		messages = append(messages, "Observed: passive waiting or polling adds no new evidence and reduces the discipline score. Next: detach the work, record its cleanup and wake-up target with one-shot-tally background record, arrange one-shot-tally background complete at exit, then do other useful work or stop.")
+	}
+	if isCommand && detachedTmuxRE.MatchString(command) && !isBackgroundRecord {
+		messages = append(messages, "Observed: a detached tmux job was started without a one-shot-tally background record. Next: record the job ID, cleanup command, and originating tmux pane so completion can wake the agent instead of requiring polling.")
+	}
 	if repeats == 3 {
 		s.RepeatedWarnings++
 		messages = append(messages, fmt.Sprintf("Observed: %s received the same input 3 times, so the latest call added no new evidence. Next: %s", e.ToolName, nextAction(s)))
@@ -283,6 +326,12 @@ func postToolUse(e event, w io.Writer) error {
 				s.TestFailures++
 			}
 		}
+		if pending.BackgroundRecord && responsePassed(e.ToolResponse) {
+			s.BackgroundRecords++
+		}
+		if pending.BackgroundComplete && responsePassed(e.ToolResponse) {
+			s.BackgroundCompletions++
+		}
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -305,10 +354,14 @@ func stop(e event, w io.Writer) error {
 		}
 	}
 	line := reportLine(s)
-	if (s.Tests > 0 || s.Revision > 0) && !strings.Contains(e.LastAssistantMsg, "Discipline score:") && !e.StopHookActive {
-		return writeJSON(w, hookOutput{Decision: "block", Reason: "Append this mechanical verification line to the final response without additional investigation: " + line})
+	stewardship := ""
+	if s.BackgroundRecords > s.BackgroundCompletions {
+		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
 	}
-	return writeJSON(w, hookOutput{SystemMessage: line})
+	if (s.Tests > 0 || s.Revision > 0) && !strings.Contains(e.LastAssistantMsg, "Discipline score:") && !e.StopHookActive {
+		return writeJSON(w, hookOutput{Decision: "block", Reason: "Append this mechanical verification line to the final response without additional investigation: " + line + stewardship})
+	}
+	return writeJSON(w, hookOutput{SystemMessage: line + stewardship})
 }
 
 func reportLine(s state) string {
@@ -316,7 +369,7 @@ func reportLine(s state) string {
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		result = "FAIL"
 	}
-	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), result, grade(s), numericScore(s))
+	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, result, grade(s), numericScore(s))
 }
 
 func grade(s state) string {
@@ -364,6 +417,8 @@ func numericScore(s state) int {
 	}
 	score -= minInt(20, s.RepeatedWarnings*8)
 	score -= minInt(30, s.ProductionBlocks*15)
+	score -= minInt(25, s.PassiveWaits*7)
+	score += minInt(10, s.BackgroundRecords*5)
 	if s.MaxInspectionStreak >= 8 {
 		score -= minInt(15, s.MaxInspectionStreak-5)
 	}
@@ -383,7 +438,25 @@ func numericScore(s state) int {
 	if score < 0 {
 		return 0
 	}
+	if score > 100 {
+		return 100
+	}
 	return score
+}
+
+func passiveWait(e event, command string) bool {
+	tool := strings.ToLower(e.ToolName)
+	if strings.Contains(tool, "wait") {
+		return true
+	}
+	if strings.Contains(tool, "write_stdin") {
+		var fields map[string]any
+		if json.Unmarshal(e.ToolInput, &fields) == nil {
+			chars, present := fields["chars"]
+			return !present || strings.TrimSpace(fmt.Sprint(chars)) == ""
+		}
+	}
+	return passiveWaitRE.MatchString(command)
 }
 
 func responsePassed(raw json.RawMessage) bool {
@@ -599,6 +672,147 @@ func commandFrom(raw json.RawMessage) string {
 	return ""
 }
 
+func backgroundCommand(args []string, w io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: one-shot-tally background <record|complete|list>")
+	}
+	switch args[0] {
+	case "record":
+		return recordBackground(args[1:], w)
+	case "complete":
+		return completeBackground(args[1:], w)
+	case "list":
+		jobs, err := loadBackgroundJobs()
+		if err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(jobs))
+		for id := range jobs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			job := jobs[id]
+			status := "running"
+			if !job.CompletedAt.IsZero() {
+				status = "completed"
+			}
+			fmt.Fprintf(w, "%s\t%s\tcleanup: %s\twake: %s\n", job.ID, status, job.Cleanup, valueOr(job.TmuxTarget, "none"))
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown background command %q", args[0])
+	}
+}
+
+func recordBackground(args []string, w io.Writer) error {
+	if len(args) < 3 || args[1] != "--cleanup" || strings.TrimSpace(args[0]) == "" || strings.TrimSpace(args[2]) == "" {
+		return errors.New("usage: one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]")
+	}
+	id := args[0]
+	if !regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString(id) {
+		return errors.New("background job ID may contain only letters, digits, dot, underscore, and hyphen")
+	}
+	target := os.Getenv("TMUX_PANE")
+	if len(args) > 3 {
+		if len(args) != 5 || args[3] != "--tmux-target" || strings.TrimSpace(args[4]) == "" {
+			return errors.New("usage: one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]")
+		}
+		target = args[4]
+	}
+	jobs, err := loadBackgroundJobs()
+	if err != nil {
+		return err
+	}
+	jobs[id] = backgroundJob{ID: id, Cleanup: args[2], TmuxTarget: target, SessionID: os.Getenv("ONE_SHOT_SESSION_ID"), TurnID: os.Getenv("ONE_SHOT_TURN_ID"), CreatedAt: time.Now().UTC()}
+	if err := saveBackgroundJobs(jobs); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Recorded background job %s. Arrange completion with: one-shot-tally background complete %s\n", id, id)
+	return nil
+}
+
+func completeBackground(args []string, w io.Writer) error {
+	if len(args) != 1 {
+		return errors.New("usage: one-shot-tally background complete ID")
+	}
+	jobs, err := loadBackgroundJobs()
+	if err != nil {
+		return err
+	}
+	job, ok := jobs[args[0]]
+	if !ok {
+		return fmt.Errorf("background job %q is not recorded", args[0])
+	}
+	job.CompletedAt = time.Now().UTC()
+	jobs[job.ID] = job
+	if err := saveBackgroundJobs(jobs); err != nil {
+		return err
+	}
+	if job.TmuxTarget != "" {
+		message := fmt.Sprintf("Background job %s completed. Resume the originating task now; cleanup record: %s", job.ID, singleLine(job.Cleanup))
+		if err := exec.Command("tmux", "send-keys", "-l", "-t", job.TmuxTarget, message).Run(); err != nil {
+			return fmt.Errorf("job recorded complete, but tmux wake-up failed: %w", err)
+		}
+		if err := exec.Command("tmux", "send-keys", "-t", job.TmuxTarget, "Enter").Run(); err != nil {
+			return fmt.Errorf("job recorded complete, but tmux Enter failed: %w", err)
+		}
+	}
+	fmt.Fprintf(w, "Completed background job %s; cleanup: %s\n", job.ID, job.Cleanup)
+	return nil
+}
+
+func loadBackgroundJobs() (map[string]backgroundJob, error) {
+	p, err := backgroundJobsPath()
+	if err != nil {
+		return nil, err
+	}
+	jobs := map[string]backgroundJob{}
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return jobs, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return jobs, json.Unmarshal(b, &jobs)
+}
+
+func saveBackgroundJobs(jobs map[string]backgroundJob) error {
+	p, err := backgroundJobsPath()
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(jobs)
+	if err != nil {
+		return err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
+func backgroundJobsPath() (string, error) {
+	p, err := lifetimePath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(p), "background-jobs.json"), nil
+}
+
+func valueOr(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func singleLine(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
 func fingerprint(tool string, raw json.RawMessage) string {
 	var value any
 	_ = json.Unmarshal(raw, &value)
@@ -626,7 +840,7 @@ func printLatest(asJSON bool) error {
 	}
 	var files []candidate
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == "lifetime.json" {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == "lifetime.json" || entry.Name() == "background-jobs.json" {
 			continue
 		}
 		info, err := entry.Info()

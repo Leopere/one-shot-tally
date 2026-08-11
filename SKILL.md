@@ -1,6 +1,6 @@
 ---
 name: one-shot-tally
-description: Run and interpret the one-shot-tally hook, including status, scoring, Spark delegation discounts, and installation.
+description: Run and interpret the one-shot-tally hook, including status, scoring, background-job stewardship, Spark delegation discounts, and installation.
 ---
 
 # One-Shot Tally
@@ -16,6 +16,11 @@ Usage:
   one-shot-tally                  process a hook event from stdin
   one-shot-tally status [--json]  show the latest run and lifetime totals
   one-shot-tally grade [--json]   alias for status
+  one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]
+                                  record cleanup and the agent wake-up target
+  one-shot-tally background complete ID
+                                  mark complete and wake the originating tmux pane
+  one-shot-tally background list  list recorded background jobs and cleanup commands
   one-shot-tally version          show the version
   one-shot-tally help|-h|--help   show this help
 ```
@@ -31,6 +36,9 @@ Run `one-shot-tally --help` for the installed binary's current help.
 - Five test runs is the normal pacing guideline. More tests reduce the discipline score but remain allowed when correctness requires them.
 - A blocked production attempt costs points but is recoverable after the current revision passes verification. The production action itself remains blocked until then.
 - Prefer at most two useful subagents at first. Do not create delegation work merely to improve the score.
+- Do not watch or repeatedly poll long-running work. Record it with `one-shot-tally background record ID --cleanup CMD`, arrange `one-shot-tally background complete ID` at job exit, and continue useful work or stop.
+- `record` captures the current `$TMUX_PANE` by default. `complete` wakes that pane with a resume-and-cleanup message. Use `--tmux-target PANE` when the originating agent is in a different known pane.
+- Successful records receive a small capped reward. Passive `wait`, polling, `watch`, `tail -f`, sleep loops, and repeated tmux status checks reduce the score but remain allowed when genuinely necessary.
 
 ## Build and install
 
