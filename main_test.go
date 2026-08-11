@@ -324,8 +324,11 @@ func TestRemovingDeliveryContractIsDeniedAndFailsRun(t *testing.T) {
 		t.Fatalf("contract deletion not denied: %#v", out)
 	}
 	s := loadTestState(t, dir)
-	if s.DeliveryContractFailures != 1 || numericScore(s) != 0 || grade(s) != "F" || !strings.Contains(reportLine(s), "Final result: FAIL") {
+	if s.DeliveryContractFailures != 1 || !s.OpenDeliveryContractFailure || s.Revision != 0 || numericScore(s) != 0 || grade(s) != "F" || !strings.Contains(reportLine(s), "Final result: FAIL") {
 		t.Fatalf("contract failure not durable: %#v report=%s", s, reportLine(s))
+	}
+	if !strings.Contains(string(mustJSON(out)), "Continue now with a corrected") {
+		t.Fatalf("denial encourages stopping instead of recovery: %#v", out)
 	}
 }
 
@@ -353,15 +356,35 @@ func TestDirectDeliveryEntrypointRemovalIsDenied(t *testing.T) {
 	}
 }
 
-func TestFailedDeliveryContractTurnCannotShipAfterPassingTest(t *testing.T) {
+func TestCorrectedDeliveryContractEditRecoversAndCanShip(t *testing.T) {
 	dir := t.TempDir()
-	common := map[string]any{"session_id": "s", "turn_id": "failed-contract"}
+	common := map[string]any{"session_id": "s", "turn_id": "recovered-contract"}
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "bad", "tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: AGENTS.md\n@@\n-Run ship-it after verification.\n+Commit however is easiest.\n*** End Patch"}})
+	corrected := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "corrected", "tool_input": map[string]any{"patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-old text\n+new useful text; ship-it remains required\n*** End Patch"}})
+	if strings.Contains(string(mustJSON(corrected)), `"permissionDecision":"deny"`) {
+		t.Fatalf("corrected edit denied: %#v", corrected)
+	}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "corrected", "tool_response": map[string]any{"success": true}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	ship := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
-	if !strings.Contains(string(mustJSON(ship)), `"permissionDecision":"deny"`) || !strings.Contains(string(mustJSON(ship)), "instant failure") {
-		t.Fatalf("failed turn could ship: %#v", ship)
+	if strings.Contains(string(mustJSON(ship)), `"permissionDecision":"deny"`) {
+		t.Fatalf("recovered verified turn could not ship: %#v", ship)
+	}
+	s := loadTestState(t, dir)
+	if s.DeliveryContractRecoveries != 1 || s.OpenDeliveryContractFailure || numericScore(s) != 77 || !strings.Contains(reportLine(s), "Final result: PASS") {
+		t.Fatalf("recovery state = %#v score=%d report=%s", s, numericScore(s), reportLine(s))
+	}
+}
+
+func TestSessionGuidanceValuesCompletionOverScore(t *testing.T) {
+	dir := t.TempDir()
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
+	text := string(mustJSON(out))
+	for _, want := range []string{"Complete the requested outcome", "do not optimize a score by doing nothing", "Spend the time necessary", "recovery remains eligible to ship"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("guidance missing %q: %#v", want, out)
+		}
 	}
 }
 

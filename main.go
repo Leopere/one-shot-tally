@@ -52,39 +52,42 @@ type pendingCall struct {
 	RepeatedTest       bool      `json:"repeated_test"`
 	BackgroundRecord   bool      `json:"background_record"`
 	BackgroundComplete bool      `json:"background_complete"`
+	ContractRecovery   bool      `json:"contract_recovery"`
 }
 
 type state struct {
-	StateVersion             int                    `json:"state_version"`
-	SessionID                string                 `json:"session_id"`
-	TurnID                   string                 `json:"turn_id"`
-	UpdatedAt                time.Time              `json:"updated_at"`
-	TotalCalls               int                    `json:"total_calls"`
-	CallCostUnits            int                    `json:"call_cost_units"`
-	SparkCalls               int                    `json:"spark_calls"`
-	Tests                    int                    `json:"tests"`
-	TestPasses               int                    `json:"test_passes"`
-	TestFailures             int                    `json:"test_failures"`
-	TotalTestMillis          int64                  `json:"total_test_millis"`
-	MaxTestMillis            int64                  `json:"max_test_millis"`
-	RedundantTestMillis      int64                  `json:"redundant_test_millis"`
-	Revision                 int                    `json:"revision"`
-	VerifiedRevision         int                    `json:"verified_revision"`
-	InspectionStreak         int                    `json:"inspection_streak"`
-	MaxInspectionStreak      int                    `json:"max_inspection_streak"`
-	RepeatedWarnings         int                    `json:"repeated_warnings"`
-	ProductionBlocks         int                    `json:"production_blocks"`
-	BackgroundRecords        int                    `json:"background_records"`
-	BackgroundCompletions    int                    `json:"background_completions"`
-	PassiveWaits             int                    `json:"passive_waits"`
-	DeliveryContractFailures int                    `json:"delivery_contract_failures"`
-	ToolCounts               map[string]int         `json:"tool_counts"`
-	Fingerprints             map[string]int         `json:"fingerprints"`
-	TestFingerprints         map[string]int         `json:"test_fingerprints"`
-	Pending                  map[string]pendingCall `json:"pending"`
-	LastTestPassed           bool                   `json:"last_test_passed"`
-	LastTestResultKnown      bool                   `json:"last_test_result_known"`
-	RecordedInLifetime       bool                   `json:"recorded_in_lifetime"`
+	StateVersion                int                    `json:"state_version"`
+	SessionID                   string                 `json:"session_id"`
+	TurnID                      string                 `json:"turn_id"`
+	UpdatedAt                   time.Time              `json:"updated_at"`
+	TotalCalls                  int                    `json:"total_calls"`
+	CallCostUnits               int                    `json:"call_cost_units"`
+	SparkCalls                  int                    `json:"spark_calls"`
+	Tests                       int                    `json:"tests"`
+	TestPasses                  int                    `json:"test_passes"`
+	TestFailures                int                    `json:"test_failures"`
+	TotalTestMillis             int64                  `json:"total_test_millis"`
+	MaxTestMillis               int64                  `json:"max_test_millis"`
+	RedundantTestMillis         int64                  `json:"redundant_test_millis"`
+	Revision                    int                    `json:"revision"`
+	VerifiedRevision            int                    `json:"verified_revision"`
+	InspectionStreak            int                    `json:"inspection_streak"`
+	MaxInspectionStreak         int                    `json:"max_inspection_streak"`
+	RepeatedWarnings            int                    `json:"repeated_warnings"`
+	ProductionBlocks            int                    `json:"production_blocks"`
+	BackgroundRecords           int                    `json:"background_records"`
+	BackgroundCompletions       int                    `json:"background_completions"`
+	PassiveWaits                int                    `json:"passive_waits"`
+	DeliveryContractFailures    int                    `json:"delivery_contract_failures"`
+	DeliveryContractRecoveries  int                    `json:"delivery_contract_recoveries"`
+	OpenDeliveryContractFailure bool                   `json:"open_delivery_contract_failure"`
+	ToolCounts                  map[string]int         `json:"tool_counts"`
+	Fingerprints                map[string]int         `json:"fingerprints"`
+	TestFingerprints            map[string]int         `json:"test_fingerprints"`
+	Pending                     map[string]pendingCall `json:"pending"`
+	LastTestPassed              bool                   `json:"last_test_passed"`
+	LastTestResultKnown         bool                   `json:"last_test_result_known"`
+	RecordedInLifetime          bool                   `json:"recorded_in_lifetime"`
 }
 
 type backgroundJob struct {
@@ -138,7 +141,7 @@ func main() {
 			}
 			return
 		case "version":
-			fmt.Println("one-shot-tally 1.4.0")
+			fmt.Println("one-shot-tally 1.5.0")
 			return
 		case "help", "-h", "--help":
 			printHelp(os.Stdout)
@@ -173,7 +176,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
 	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
 	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
-	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied and fails the run.")
+	fmt.Fprintln(w, "  Removing a ship or automated-deploy gate without a same-edit replacement is denied.")
+	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -185,7 +189,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	case "SessionStart":
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName:     "SessionStart",
-			AdditionalContext: "Use one-shot delivery: gather evidence once, implement a substantial pass, keep output bounded, and avoid repeated agentic loops. Delegate independent, bounded, low-risk work to spark_worker subagents when possible; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. For long work, detach it, record its cleanup and wake-up target with one-shot-tally background record, and have completion call one-shot-tally background complete; do not poll or passively watch it. The compiled hook mechanically counts tools, revisions, tests, verification state, background stewardship, and passive waits.",
+			AdditionalContext: "Complete the requested outcome; do not optimize a score by doing nothing, narrowing scope, or stopping at the first warning. Spend the time necessary for evidence, implementation, and final verification, while avoiding repeated work and passive waiting. Delegate independent, bounded, low-risk work to spark_worker subagents when useful; their tool-pressure cost is discounted. Keep architecture, authorization, integration, and final acceptance with the primary agent. A denied ship/deploy-contract removal changes nothing: immediately make a corrected contract-preserving edit, verify it, and continue; recovery remains eligible to ship with a score penalty. For long work, record cleanup and a completion wake-up instead of polling. The compiled hook mechanically counts outcomes and process signals; efficiency never outranks completion or correctness.",
 		}})
 	case "PreToolUse":
 		return preToolUse(e, w)
@@ -227,6 +231,21 @@ func preToolUse(e event, w io.Writer) error {
 	fp := fingerprint(e.ToolName, e.ToolInput)
 	s.Fingerprints[fp]++
 	repeats := s.Fingerprints[fp]
+	if contractFailure {
+		s.DeliveryContractFailures++
+		s.OpenDeliveryContractFailure = true
+		if err := save(p, s); err != nil {
+			return err
+		}
+		detail := strings.Join(removedGates, " and ")
+		if detail == "" {
+			detail = "delivery contract"
+		}
+		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
+			HookEventName: "PreToolUse", PermissionDecision: "deny",
+			PermissionDecisionReason: "Blocked: this action removes the " + detail + " without an equivalent same-edit replacement. Nothing changed. Continue now with a corrected contract-preserving edit, then verify the final revision; successful recovery can ship, but this attempt retains a score penalty.",
+		}})
+	}
 	if isEdit {
 		s.Revision++
 		s.InspectionStreak = 0
@@ -246,24 +265,10 @@ func preToolUse(e event, w io.Writer) error {
 		s.PassiveWaits++
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete}
-	}
-	if contractFailure {
-		s.DeliveryContractFailures++
-		if err := save(p, s); err != nil {
-			return err
-		}
-		detail := strings.Join(removedGates, " and ")
-		if detail == "" {
-			detail = "delivery contract"
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: "PreToolUse", PermissionDecision: "deny",
-			PermissionDecisionReason: "Instant process failure: this action removes the " + detail + " without adding an equivalent gate in the same edit. Preserve or safely replace both ship-it and deploy-it stages; this turn cannot ship.",
-		}})
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, ContractRecovery: isEdit && unresolvedDeliveryContract(s)}
 	}
 
-	if isProduction && (s.DeliveryContractFailures > 0 || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
+	if isProduction && (unresolvedDeliveryContract(s) || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
 		s.ProductionBlocks++
 		if err := save(p, s); err != nil {
 			return err
@@ -308,10 +313,14 @@ func preToolUse(e event, w io.Writer) error {
 }
 
 func productionBlockReason(s state) string {
-	if s.DeliveryContractFailures > 0 {
-		return "Production action blocked: this turn attempted to remove a required ship or deploy gate and is an instant failure. Preserve the delivery contract and ship from a fresh turn."
+	if unresolvedDeliveryContract(s) {
+		return "Production action blocked: the denied delivery-contract removal is not yet recovered. Continue with one corrected contract-preserving edit, then verify that final revision and retry."
 	}
 	return "Production action blocked: the current code revision does not have a recorded passing verification. Run the final required check once, then retry."
+}
+
+func unresolvedDeliveryContract(s state) bool {
+	return s.OpenDeliveryContractFailure
 }
 
 func nextAction(s state) string {
@@ -360,6 +369,10 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.BackgroundComplete && responsePassed(e.ToolResponse) {
 			s.BackgroundCompletions++
 		}
+		if pending.ContractRecovery && responsePassed(e.ToolResponse) {
+			s.DeliveryContractRecoveries++
+			s.OpenDeliveryContractFailure = false
+		}
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -394,10 +407,10 @@ func stop(e event, w io.Writer) error {
 
 func reportLine(s state) string {
 	result := "PASS"
-	if s.DeliveryContractFailures > 0 || (s.TestFailures > 0 && !s.LastTestPassed) {
+	if unresolvedDeliveryContract(s) || (s.TestFailures > 0 && !s.LastTestPassed) {
 		result = "FAIL"
 	}
-	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Delivery contract failures: %d | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.DeliveryContractFailures, result, grade(s), numericScore(s))
+	return fmt.Sprintf("Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Background jobs: %d recorded, %d completed; passive waits: %d | Delivery contract: %d blocked, %d recovered | Final result: %s | Discipline score: %s (%d/100)", s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.DeliveryContractFailures, s.DeliveryContractRecoveries, result, grade(s), numericScore(s))
 }
 
 func grade(s state) string {
@@ -426,7 +439,7 @@ func grade(s state) string {
 }
 
 func numericScore(s state) int {
-	if s.DeliveryContractFailures > 0 {
+	if unresolvedDeliveryContract(s) {
 		return 0
 	}
 	if s.TestFailures > 0 && !s.LastTestPassed {
@@ -448,6 +461,7 @@ func numericScore(s state) int {
 	}
 	score -= minInt(20, s.RepeatedWarnings*8)
 	score -= minInt(30, s.ProductionBlocks*15)
+	score -= minInt(30, s.DeliveryContractFailures*15)
 	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
 	if s.MaxInspectionStreak >= 8 {
