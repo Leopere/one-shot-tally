@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.9.0"
+const binaryVersion = "1.9.1"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -452,9 +452,8 @@ func stop(e event, w io.Writer) error {
 	if s.BackgroundRecords > s.BackgroundCompletions {
 		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
 	}
-	hasWork := s.Tests > 0 || s.Revision > 0
-	if hasWork && !finalPassed(s) && !e.StopHookActive {
-		return writeJSON(w, hookOutput{Decision: "block", Reason: "The requested goal is not verified yet. Continue with the smallest goal-directed step. Fix the known failure or run the required verification. Do not expand scope; park useful side work for later." + stewardship})
+	if !finalPassed(s) {
+		return writeJSON(w, hookOutput{SystemMessage: line + ". Advisory: continue with the smallest goal-directed verification step when more work is appropriate; this hook does not block stopping or delivery." + stewardship})
 	}
 	if !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
@@ -464,9 +463,6 @@ func stop(e event, w io.Writer) error {
 		if err := save(p, s); err != nil {
 			return err
 		}
-	}
-	if hasWork && !strings.Contains(e.LastAssistantMsg, "Goal result: SUCCESS") && !e.StopHookActive {
-		return writeJSON(w, hookOutput{Decision: "block", Reason: "Append this mechanical verification line to the final response without additional investigation: " + line + stewardship})
 	}
 	return writeJSON(w, hookOutput{SystemMessage: line + stewardship})
 }

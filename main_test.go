@@ -238,13 +238,13 @@ func TestGoalModeDoesNotScoreToolVolume(t *testing.T) {
 	}
 }
 
-func TestStopRequestsMechanicalLineOnce(t *testing.T) {
+func TestVerifiedStopReportsWithoutBlocking(t *testing.T) {
 	dir := t.TempDir()
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "e", "tool_input": map[string]any{"command": "patch"}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "last_assistant_message": "Done"})
-	if out["decision"] != "block" || !strings.Contains(out["reason"].(string), "Goal result: SUCCESS") {
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Goal result: SUCCESS") {
 		t.Fatalf("unexpected stop output: %#v", out)
 	}
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
@@ -260,13 +260,13 @@ func TestStopRequestsMechanicalLineOnce(t *testing.T) {
 	}
 }
 
-func TestUnverifiedStopContinuesTowardSuccessBeforeLifetimeRecord(t *testing.T) {
+func TestUnverifiedStopAdvisesWithoutBlockingOrLifetimeRecord(t *testing.T) {
 	dir := t.TempDir()
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "last_assistant_message": "Done"})
-	reason, _ := out["reason"].(string)
-	if out["decision"] != "block" || !strings.Contains(reason, "not verified yet") || !strings.Contains(reason, "smallest goal-directed step") || strings.Contains(reason, "Append this mechanical") {
-		t.Fatalf("unverified stop did not continue the goal: %#v", out)
+	message, _ := out["systemMessage"].(string)
+	if out["decision"] == "block" || !strings.Contains(message, "NOT VERIFIED") || !strings.Contains(message, "smallest goal-directed verification step") {
+		t.Fatalf("unverified stop was not advisory: %#v", out)
 	}
 	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("continuing stop recorded a premature lifetime result: %v", err)
@@ -398,7 +398,7 @@ func TestHelpDocumentsSparkPolicy(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.9.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.9.1", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
