@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.0"
+const binaryVersion = "1.10.1"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -1015,11 +1015,15 @@ func codexGoalsPath() (string, error) {
 		}
 		return path, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		codexHome = filepath.Join(home, ".codex")
 	}
-	path := filepath.Join(home, ".codex", "goals_1.sqlite")
+	path := filepath.Join(codexHome, "goals_1.sqlite")
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("Codex goals database is unavailable: %w", err)
 	}

@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.1", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -675,6 +675,71 @@ func TestGoalListAndResumeUseCodexHistoryReadOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read-only goal lookup created its database: %v", err)
+	}
+}
+
+func TestCodexGoalsPathUsesActiveAccountAndExplicitOverride(t *testing.T) {
+	root := t.TempDir()
+	codexHome := filepath.Join(root, "account")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	accountDB := filepath.Join(codexHome, "goals_1.sqlite")
+	if err := os.WriteFile(accountDB, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("ONE_SHOT_GOALS_DB", "")
+	if got, err := codexGoalsPath(); err != nil || got != accountDB {
+		t.Fatalf("account goals path = %q, %v; want %q", got, err, accountDB)
+	}
+
+	override := filepath.Join(root, "override.sqlite")
+	if err := os.WriteFile(override, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ONE_SHOT_GOALS_DB", override)
+	if got, err := codexGoalsPath(); err != nil || got != override {
+		t.Fatalf("override goals path = %q, %v; want %q", got, err, override)
+	}
+
+	fallbackHome := filepath.Join(root, "home")
+	fallbackDB := filepath.Join(fallbackHome, ".codex", "goals_1.sqlite")
+	if err := os.MkdirAll(filepath.Dir(fallbackDB), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fallbackDB, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("ONE_SHOT_GOALS_DB", "")
+	t.Setenv("HOME", fallbackHome)
+	if got, err := codexGoalsPath(); err != nil || got != fallbackDB {
+		t.Fatalf("fallback goals path = %q, %v; want %q", got, err, fallbackDB)
+	}
+}
+
+func TestSessionStartReconcilesGoalFromActiveAccount(t *testing.T) {
+	dir := t.TempDir()
+	codexHome := t.TempDir()
+	db := testGoalsDB(t)
+	if err := os.Rename(db, filepath.Join(codexHome, "goals_1.sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	t.Setenv("ONE_SHOT_GOALS_DB", "")
+	t.Setenv("CODEX_HOME", codexHome)
+
+	if err := setSessionGoalActive("thread-complete", true); err != nil {
+		t.Fatal(err)
+	}
+	completed := hook(t, dir, map[string]any{"session_id": "thread-complete", "turn_id": "after", "hook_event_name": "SessionStart"})
+	if strings.Contains(string(mustJSON(completed)), "Goal active") {
+		t.Fatalf("completed account goal left stale marker: %#v", completed)
+	}
+	active := hook(t, dir, map[string]any{"session_id": "thread-active", "turn_id": "resume", "hook_event_name": "SessionStart"})
+	if !strings.Contains(string(mustJSON(active)), "Goal active") {
+		t.Fatalf("active account goal was not recognized: %#v", active)
 	}
 }
 
