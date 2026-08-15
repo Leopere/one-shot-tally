@@ -1,6 +1,6 @@
 ---
 name: one-shot-tally
-description: Install, run, and interpret one-shot-tally for scoring, background jobs, Spark use, and durable TODO flow.
+description: Use one-shot-tally for concise coaching, goal recovery, background jobs, and durable TODOs.
 ---
 # One-Shot Tally
 
@@ -16,27 +16,30 @@ one-shot-tally background list
 one-shot-tally todo add TEXT --context WHY
 one-shot-tally todo list [--all]
 one-shot-tally todo done ID
+one-shot-tally goal list [--all]
+one-shot-tally goal show ID
+one-shot-tally goal resume ID
 one-shot-tally version
 one-shot-tally help|-h|--help
 ```
 
 ## Rules
 
-- Complete the requested outcome first.
-- Final response must come from a verified edited revision.
-- Goal result is the only completion metric.
-- `SUCCESS` marks verified completion. `NOT VERIFIED` means the goal still needs work or evidence.
-- Coaching signals are advisory. They cannot change `SUCCESS` or justify stopping early.
-- During `/goal` work, high tool-call volume is expected and is not scored. Other coaching signals still apply.
-- Never block Git, `ship-it`, `deploy-it`, or other requested delivery actions.
-- Record successful delivery calls as outcome evidence. Do not treat command success as a live-service check.
-- Use `spark_worker` for bounded, low-risk tasks.
-- Spark has `0.25` pressure cost; gates and checks are never discounted.
-- Before long jobs: `background record`; on exit: `background complete`.
-- `complete` wakes the originating tmux pane with resume-and-cleanup guidance.
-- Park out-of-scope work with `todo add TEXT --context WHY`; rewards apply only after current verification.
-- Use the smallest step that advances the requested goal. Do not manufacture edits or expand scope for a score.
-- If tally bookkeeping fails, the hook reports the error and lets tool use continue.
+- Finish the requested outcome and verify edits.
+- Treat coaching as advisory; never trade correctness or delivery for a score.
+- Record detached work instead of polling. Park useful out-of-scope work as a TODO.
+- Never block Git, `ship-it`, or `deploy-it`.
+
+## Resume a goal
+
+When the user asks to resume earlier work:
+
+1. Run `one-shot-tally goal list` or `goal list --all`.
+2. Run `one-shot-tally goal resume ID` for the selected goal.
+3. Call `get_goal`. Do not replace an unfinished current goal.
+4. Call `create_goal` with the exact objective printed by the command.
+
+The command reads Codex goal history. It does not alter Codex goal state.
 
 ## Build and install
 

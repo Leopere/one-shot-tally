@@ -130,7 +130,7 @@ func TestNoOpTestTokenCannotVerifyRevision(t *testing.T) {
 	}
 }
 
-func TestInspectionWarningGivesStateAwareNextAction(t *testing.T) {
+func TestReadOnlyInspectionDoesNotEmitGenericPolicy(t *testing.T) {
 	dir := t.TempDir()
 	var out map[string]any
 	for i := 0; i < 8; i++ {
@@ -140,12 +140,8 @@ func TestInspectionWarningGivesStateAwareNextAction(t *testing.T) {
 			"tool_input": map[string]any{"command": fmt.Sprintf("git status --short %d", i)},
 		})
 	}
-	encoded := string(mustJSON(out))
-	if !strings.Contains(encoded, "8 consecutive inspections with 0 edits and 0 tests") {
-		t.Fatalf("warning lacks observed state: %#v", out)
-	}
-	if !strings.Contains(encoded, "smallest step that advances the requested goal") || !strings.Contains(encoded, "edit only when evidence supports a change") {
-		t.Fatalf("warning lacks actionable recommendation: %#v", out)
+	if encoded := string(mustJSON(out)); strings.Contains(encoded, "inspection") || strings.Contains(encoded, "smallest step") {
+		t.Fatalf("generic inspection policy leaked into read-only work: %#v", out)
 	}
 }
 
@@ -166,28 +162,18 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 	})
 
 	continued := hook(t, dir, map[string]any{"session_id": "goal-session", "turn_id": "continued", "hook_event_name": "SessionStart"})
-	if text := string(mustJSON(continued)); !strings.Contains(text, "This is a /goal continuation") || !strings.Contains(text, "does not reduce the coaching score") {
+	if text := string(mustJSON(continued)); !strings.Contains(text, "Goal active") || !strings.Contains(text, "close it only after verification") {
 		t.Fatalf("goal continuation guidance = %#v", continued)
 	}
 
-	var checkpoint map[string]any
 	for i := 1; i <= 40; i++ {
 		out := hook(t, dir, map[string]any{
 			"session_id": "goal-session", "turn_id": "continued", "hook_event_name": "PreToolUse",
 			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("goal-%d", i),
 			"tool_input": map[string]any{"command": fmt.Sprintf("echo step-%d", i)},
 		})
-		if i == 12 && strings.Contains(string(mustJSON(out)), "tool calls") {
-			t.Fatalf("ordinary call threshold leaked into goal mode: %#v", out)
-		}
-		if i == 40 {
-			checkpoint = out
-		}
-	}
-	text := string(mustJSON(checkpoint))
-	for _, want := range []string{"Goal progress check", "not scored", "Repetition, passive waits, redundant tests, and unrelated scope still affect coaching"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("goal checkpoint missing %q: %#v", want, checkpoint)
+		if strings.Contains(string(mustJSON(out)), "tool calls") {
+			t.Fatalf("generic call-volume policy leaked into goal mode: %#v", out)
 		}
 	}
 	p, err := statePath(event{SessionID: "goal-session", TurnID: "continued"})
@@ -210,7 +196,7 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 		"tool_response": map[string]any{"goal": map[string]any{"status": "complete"}},
 	})
 	ended := hook(t, dir, map[string]any{"session_id": "goal-session", "turn_id": "after", "hook_event_name": "SessionStart"})
-	if strings.Contains(string(mustJSON(ended)), "/goal continuation") {
+	if strings.Contains(string(mustJSON(ended)), "Goal active") {
 		t.Fatalf("completed goal remained active: %#v", ended)
 	}
 }
@@ -358,12 +344,8 @@ func TestDurationComesFromActualToolResponse(t *testing.T) {
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
-func TestSparkCallsAreEncouragedAndDiscounted(t *testing.T) {
+func TestSparkCallsAreDiscounted(t *testing.T) {
 	dir := t.TempDir()
-	start := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "spark", "hook_event_name": "SessionStart"})
-	if !strings.Contains(string(mustJSON(start)), "spark_worker") {
-		t.Fatalf("session guidance does not encourage Spark: %#v", start)
-	}
 	for i := 0; i < 8; i++ {
 		hook(t, dir, map[string]any{"session_id": "s", "turn_id": "spark", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": fmt.Sprintf("spark-%d", i), "tool_input": map[string]any{"agent_type": "spark_worker", "task_name": fmt.Sprintf("bounded-%d", i)}})
 	}
@@ -385,20 +367,23 @@ func TestSparkCallsAreEncouragedAndDiscounted(t *testing.T) {
 	}
 }
 
-func TestHelpDocumentsSparkPolicy(t *testing.T) {
+func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 	var out bytes.Buffer
 	printHelp(&out)
-	for _, want := range []string{"status [--json]", "spark_worker", "0.25 normal calls", "correctness gates are never discounted", "During /goal work", "high tool-call volume is expected and is not scored", "Git, ship-it, and deploy-it actions are never blocked"} {
+	for _, want := range []string{"status [--json]", "goal list [--all]", "goal show ID", "goal resume ID", "score as advisory"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
 		}
+	}
+	if strings.Count(out.String(), "Guidance:") != 1 || len(out.String()) > 1800 {
+		t.Fatalf("help policy is too verbose: %d bytes", len(out.String()))
 	}
 }
 
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.9.1", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.0", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -634,15 +619,110 @@ func TestDirectDeliveryEntrypointRemovalIsNotBlocked(t *testing.T) {
 	}
 }
 
-func TestSessionGuidanceValuesCompletionOverScore(t *testing.T) {
+func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Complete and verify the requested goal", "Goal success is the only completion metric", "Do not manufacture edits, tests, or scope", "Never block Git, ship-it, or deploy-it"} {
+	for _, want := range []string{"Finish the requested outcome", "verify edits", "score is advisory"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
+	if len(text) > 300 {
+		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
+	}
+}
+
+func TestGoalListAndResumeUseCodexHistoryReadOnly(t *testing.T) {
+	db := testGoalsDB(t)
+	t.Setenv("ONE_SHOT_GOALS_DB", db)
+
+	var out bytes.Buffer
+	if err := goalCommand([]string{"list"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "paused") || strings.Contains(out.String(), "completed objective") {
+		t.Fatalf("resumable list = %q", out.String())
+	}
+
+	out.Reset()
+	if err := goalCommand([]string{"list", "--all"}, &out); err != nil || !strings.Contains(out.String(), "completed objective") {
+		t.Fatalf("all list = %q err=%v", out.String(), err)
+	}
+
+	out.Reset()
+	if err := goalCommand([]string{"resume", "aaaa"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"paused objective", "Call get_goal first", "call create_goal with that exact objective", "does not change Codex goal state"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("resume missing %q: %s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "token_budget") {
+		t.Fatalf("unbudgeted resume gained a budget: %s", out.String())
+	}
+
+	out.Reset()
+	if err := goalCommand([]string{"resume", "dddd"}, &out); err != nil || !strings.Contains(out.String(), "token_budget 500") {
+		t.Fatalf("budgeted resume = %q err=%v", out.String(), err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing.sqlite")
+	t.Setenv("ONE_SHOT_GOALS_DB", missing)
+	if err := goalCommand([]string{"list"}, &out); err == nil {
+		t.Fatal("missing goal database was accepted")
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only goal lookup created its database: %v", err)
+	}
+}
+
+func TestSessionStartReconcilesStaleGoalMarkerFromCodex(t *testing.T) {
+	dir := t.TempDir()
+	db := testGoalsDB(t)
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	t.Setenv("ONE_SHOT_GOALS_DB", db)
+	if err := setSessionGoalActive("thread-complete", true); err != nil {
+		t.Fatal(err)
+	}
+	out := hook(t, dir, map[string]any{"session_id": "thread-complete", "turn_id": "after", "hook_event_name": "SessionStart"})
+	if strings.Contains(string(mustJSON(out)), "Goal active") {
+		t.Fatalf("completed native goal left stale marker: %#v", out)
+	}
+	active, err := sessionGoalActive("thread-complete")
+	if err != nil || active {
+		t.Fatalf("stale marker remains: active=%v err=%v", active, err)
+	}
+
+	out = hook(t, dir, map[string]any{"session_id": "thread-active", "turn_id": "resume", "hook_event_name": "SessionStart"})
+	if !strings.Contains(string(mustJSON(out)), "Goal active") {
+		t.Fatalf("active native goal was not recognized: %#v", out)
+	}
+}
+
+func testGoalsDB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "goals.sqlite")
+	schema := `CREATE TABLE thread_goals (
+		thread_id TEXT PRIMARY KEY NOT NULL,
+		goal_id TEXT NOT NULL,
+		objective TEXT NOT NULL,
+		status TEXT NOT NULL,
+		token_budget INTEGER,
+		tokens_used INTEGER NOT NULL DEFAULT 0,
+		time_used_seconds INTEGER NOT NULL DEFAULT 0,
+		created_at_ms INTEGER NOT NULL,
+		updated_at_ms INTEGER NOT NULL
+	);
+	INSERT INTO thread_goals VALUES ('thread-paused','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','paused objective','paused',NULL,12,0,1000,2000);
+	INSERT INTO thread_goals VALUES ('thread-active','cccccccc-cccc-cccc-cccc-cccccccccccc','active objective','active',NULL,23,0,2000,3000);
+	INSERT INTO thread_goals VALUES ('thread-complete','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','completed objective','complete',NULL,34,0,3000,4000);
+	INSERT INTO thread_goals VALUES ('thread-budget','dddddddd-dddd-dddd-dddd-dddddddddddd','budgeted objective','budget_limited',500,500,0,4000,5000);`
+	if output, err := exec.Command("sqlite3", path, schema).CombinedOutput(); err != nil {
+		t.Fatalf("create goals fixture: %v: %s", err, output)
+	}
+	return path
 }
 
 func TestTodoLifecycleIsDurableAndDeduplicated(t *testing.T) {

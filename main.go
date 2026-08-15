@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.9.1"
+const binaryVersion = "1.10.0"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -125,6 +125,17 @@ type lifetime struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+type codexGoal struct {
+	ThreadID    string `json:"thread_id"`
+	GoalID      string `json:"goal_id"`
+	Objective   string `json:"objective"`
+	Status      string `json:"status"`
+	TokenBudget *int64 `json:"token_budget"`
+	TokensUsed  int64  `json:"tokens_used"`
+	CreatedAtMS int64  `json:"created_at_ms"`
+	UpdatedAtMS int64  `json:"updated_at_ms"`
+}
+
 type hookSpecificOutput struct {
 	HookEventName     string `json:"hookEventName"`
 	AdditionalContext string `json:"additionalContext,omitempty"`
@@ -155,6 +166,11 @@ func main() {
 				fatal(err)
 			}
 			return
+		case "goal":
+			if err := goalCommand(os.Args[2:], os.Stdout); err != nil {
+				fatal(err)
+			}
+			return
 		case "version":
 			printVersion(os.Stdout)
 			return
@@ -162,7 +178,7 @@ func main() {
 			printHelp(os.Stdout)
 			return
 		default:
-			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|todo <add|list|done>|version|help]"))
+			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|todo <add|list|done>|goal <list|show|resume>|version|help]"))
 		}
 	}
 	runHookFailOpen(os.Stdin, os.Stdout, os.Stderr)
@@ -195,21 +211,14 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "                                  park discovered out-of-scope work and return to the goal")
 	fmt.Fprintln(w, "  one-shot-tally todo list [--all] list open deferred work, or include completed items")
 	fmt.Fprintln(w, "  one-shot-tally todo done ID      complete one deferred item")
+	fmt.Fprintln(w, "  one-shot-tally goal list [--all] list resumable goals, or all goals")
+	fmt.Fprintln(w, "  one-shot-tally goal show ID      print a previous goal")
+	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the exact create_goal handoff")
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Agent guidance:")
-	fmt.Fprintln(w, "  Delegate independent, bounded, low-risk work to spark_worker subagents.")
-	fmt.Fprintln(w, "  Keep architecture, authorization, integration, and final acceptance with the primary agent.")
-	fmt.Fprintln(w, "  Spark calls count as 0.25 normal calls for tool-pressure scoring; tests and correctness gates are never discounted.")
-	fmt.Fprintln(w, "  During /goal work, high tool-call volume is expected and is not scored; other coaching signals still apply.")
-	fmt.Fprintln(w, "  Five tests is a pacing guideline, not a hard stop; required verification may continue with a score penalty.")
-	fmt.Fprintln(w, "  Record detached jobs with cleanup and wake-up data; passive polling and waiting reduce the score.")
-	fmt.Fprintln(w, "  Successful verified production calls are reported and earn one capped outcome credit.")
-	fmt.Fprintln(w, "  Git, ship-it, and deploy-it actions are never blocked; delivery actions are recorded as outcomes.")
-	fmt.Fprintln(w, "  Do not optimize the score by doing nothing; complete the requested outcome and recover from correctable mistakes.")
-	fmt.Fprintln(w, "  F is reserved for failed or unverified outcomes; verified completion has a D/50 floor even when inefficient.")
-	fmt.Fprintln(w, "  Park useful side discoveries in the durable TODO list; a verified current outcome earns a small capped reward.")
+	fmt.Fprintln(w, "Guidance: finish the requested outcome, verify edits, and treat the score as advisory.")
+	fmt.Fprintln(w, "Use goal resume to recover an objective; Codex must create the resumed goal.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -222,13 +231,13 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Complete and verify the requested goal. Goal success is the only completion metric. Coaching signals can improve the path, but they never turn verified success into failure or justify stopping early. Use the smallest goal-directed next step. Do not manufacture edits, tests, or scope to improve a signal. Park useful side work with `one-shot-tally todo add TEXT --context WHY`, then return to the goal. Delegate bounded, low-risk work to spark_worker subagents when useful. Keep architecture, authorization, integration, and final acceptance with the primary agent. Never block Git, ship-it, or deploy-it. For long work, record cleanup and a completion wake-up instead of polling. Efficiency never outranks completion or correctness."
-		goalActive, err := sessionGoalActive(e.SessionID)
+		context := "Finish the requested outcome and verify edits. The tally score is advisory."
+		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
 		}
 		if goalActive {
-			context += " This is a /goal continuation. High tool-call volume is expected and does not reduce the coaching score. Keep work tied to the objective. Park unrelated work."
+			context += " Goal active: keep its full objective and close it only after verification."
 		}
 		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 			HookEventName:     "SessionStart",
@@ -279,7 +288,6 @@ func preToolUse(e event, w io.Writer) error {
 	isTodoAdd := isCommand && todoAddRE.MatchString(command)
 	isTodoDone := isCommand && todoDoneRE.MatchString(command)
 
-	previousCostUnits := s.CallCostUnits
 	s.TotalCalls++
 	callUnits := 4
 	if isSparkCall(e) {
@@ -326,27 +334,8 @@ func preToolUse(e event, w io.Writer) error {
 		s.RepeatedWarnings++
 		messages = append(messages, fmt.Sprintf("Progress check: %s received the same input 3 times. Use the existing result. Next: %s", e.ToolName, nextAction(s)))
 	}
-	if s.InspectionStreak == 8 {
-		messages = append(messages, fmt.Sprintf("Progress check: 8 consecutive inspections with %d edits and %d tests this turn. Next: %s", s.Revision, s.Tests, nextAction(s)))
-	}
-	thresholds := []int{12, 20, 30}
-	if s.GoalScoped {
-		thresholds = []int{40, 80, 120}
-	}
-	for _, threshold := range thresholds {
-		if previousCostUnits < threshold*4 && s.CallCostUnits >= threshold*4 {
-			if s.GoalScoped {
-				messages = append(messages, fmt.Sprintf("Goal progress check: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. High tool-call volume is expected and is not scored. Keep calls tied to the objective. Repetition, passive waits, redundant tests, and unrelated scope still affect coaching. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
-			} else {
-				messages = append(messages, fmt.Sprintf("Progress check: %d tool calls (%s weighted after the Spark discount), %d edits, %d tests, and a longest inspection streak of %d. Next: %s", s.TotalCalls, formatCallUnits(s.CallCostUnits), s.Revision, s.Tests, s.MaxInspectionStreak, nextAction(s)))
-			}
-		}
-	}
-	if isTest && (s.Tests == 4 || s.Tests == 5) {
-		messages = append(messages, fmt.Sprintf("Progress check: this is test run %d of the ordinary 5-run guide. Next: %s", s.Tests, nextAction(s)))
-	}
-	if isTest && s.Tests > 5 {
-		messages = append(messages, fmt.Sprintf("Progress check: test run %d exceeds the ordinary 5-run guide. Continue required verification, but avoid redundant reruns. Next: %s", s.Tests, nextAction(s)))
+	if isTest && s.Tests == 6 {
+		messages = append(messages, "Six test runs. Avoid rerunning passing checks; continue any verification correctness requires.")
 	}
 	if err := save(p, s); err != nil {
 		return err
@@ -843,6 +832,18 @@ func sessionGoalActive(sessionID string) (bool, error) {
 	return err == nil, err
 }
 
+func reconcileSessionGoal(sessionID string) (bool, error) {
+	status, found, err := codexGoalStatus(sessionID)
+	if err != nil || !found {
+		return sessionGoalActive(sessionID)
+	}
+	active := status == "active"
+	if err := setSessionGoalActive(sessionID, active); err != nil {
+		return false, err
+	}
+	return active, nil
+}
+
 func setSessionGoalActive(sessionID string, active bool) error {
 	p, err := goalMarkerPath(sessionID)
 	if err != nil {
@@ -883,6 +884,146 @@ func goalTransition(e event) string {
 func isCommandTool(tool string) bool {
 	tool = strings.ToLower(tool)
 	return tool == "bash" || strings.Contains(tool, "exec_command") || strings.Contains(tool, "shell") || strings.Contains(tool, "terminal")
+}
+
+func goalCommand(args []string, w io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: one-shot-tally goal <list|show|resume>")
+	}
+	switch args[0] {
+	case "list":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--all") {
+			return errors.New("usage: one-shot-tally goal list [--all]")
+		}
+		return listCodexGoals(len(args) == 2, w)
+	case "show", "resume":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: one-shot-tally goal %s ID", args[0])
+		}
+		goal, err := findCodexGoal(args[1])
+		if err != nil {
+			return err
+		}
+		if args[0] == "show" {
+			printCodexGoal(goal, w)
+			return nil
+		}
+		fmt.Fprintf(w, "Resume saved goal %s (previous status: %s).\n\n%s\n\nCall get_goal first; do not replace an unfinished current goal. Then call create_goal with that exact objective", goal.GoalID, goal.Status, goal.Objective)
+		if goal.TokenBudget != nil {
+			fmt.Fprintf(w, " and token_budget %d", *goal.TokenBudget)
+		}
+		fmt.Fprintln(w, ". This command does not change Codex goal state.")
+		return nil
+	default:
+		return fmt.Errorf("unknown goal command %q", args[0])
+	}
+}
+
+func listCodexGoals(includeComplete bool, w io.Writer) error {
+	where := "WHERE status <> 'complete'"
+	if includeComplete {
+		where = ""
+	}
+	goals, err := queryCodexGoals(fmt.Sprintf(`SELECT thread_id, goal_id, objective, status, token_budget, tokens_used, created_at_ms, updated_at_ms FROM thread_goals %s ORDER BY updated_at_ms DESC`, where))
+	if err != nil {
+		return err
+	}
+	for _, goal := range goals {
+		objective := truncateRunes(singleLine(goal.Objective), 100)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", shortGoalID(goal.GoalID), goal.Status, formatGoalTime(goal.UpdatedAtMS), objective)
+	}
+	return nil
+}
+
+func findCodexGoal(id string) (codexGoal, error) {
+	if !regexp.MustCompile(`^[A-Fa-f0-9-]{4,36}$`).MatchString(id) {
+		return codexGoal{}, errors.New("goal ID must be a UUID or a prefix of at least four characters")
+	}
+	goals, err := queryCodexGoals(fmt.Sprintf(`SELECT thread_id, goal_id, objective, status, token_budget, tokens_used, created_at_ms, updated_at_ms FROM thread_goals WHERE goal_id LIKE '%s%%' ORDER BY updated_at_ms DESC LIMIT 2`, id))
+	if err != nil {
+		return codexGoal{}, err
+	}
+	if len(goals) == 0 {
+		return codexGoal{}, fmt.Errorf("goal %q was not found", id)
+	}
+	if len(goals) > 1 {
+		return codexGoal{}, fmt.Errorf("goal prefix %q is ambiguous", id)
+	}
+	return goals[0], nil
+}
+
+func printCodexGoal(goal codexGoal, w io.Writer) {
+	fmt.Fprintf(w, "ID: %s\nStatus: %s\nCreated: %s\nUpdated: %s\nTokens used: %d\nObjective:\n%s\n", goal.GoalID, goal.Status, formatGoalTime(goal.CreatedAtMS), formatGoalTime(goal.UpdatedAtMS), goal.TokensUsed, goal.Objective)
+}
+
+func shortGoalID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
+}
+
+func truncateRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func formatGoalTime(milliseconds int64) string {
+	return time.UnixMilli(milliseconds).Local().Format("2006-01-02 15:04")
+}
+
+func codexGoalStatus(sessionID string) (string, bool, error) {
+	if sessionID == "" || !regexp.MustCompile(`^[A-Za-z0-9-]+$`).MatchString(sessionID) {
+		return "", false, nil
+	}
+	goals, err := queryCodexGoals(fmt.Sprintf(`SELECT thread_id, goal_id, objective, status, token_budget, tokens_used, created_at_ms, updated_at_ms FROM thread_goals WHERE thread_id = '%s' LIMIT 1`, sessionID))
+	if err != nil {
+		return "", false, err
+	}
+	if len(goals) == 0 {
+		return "", false, nil
+	}
+	return goals[0].Status, true, nil
+}
+
+func queryCodexGoals(query string) ([]codexGoal, error) {
+	path, err := codexGoalsPath()
+	if err != nil {
+		return nil, err
+	}
+	output, err := exec.Command("sqlite3", "-readonly", "-json", path, query).Output()
+	if err != nil {
+		return nil, fmt.Errorf("read Codex goals: %w", err)
+	}
+	if len(bytes.TrimSpace(output)) == 0 {
+		return nil, nil
+	}
+	var goals []codexGoal
+	if err := json.Unmarshal(output, &goals); err != nil {
+		return nil, fmt.Errorf("decode Codex goals: %w", err)
+	}
+	return goals, nil
+}
+
+func codexGoalsPath() (string, error) {
+	if path := os.Getenv("ONE_SHOT_GOALS_DB"); path != "" {
+		if _, err := os.Stat(path); err != nil {
+			return "", fmt.Errorf("Codex goals database is unavailable: %w", err)
+		}
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(home, ".codex", "goals_1.sqlite")
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("Codex goals database is unavailable: %w", err)
+	}
+	return path, nil
 }
 
 func isSparkCall(e event) bool {

@@ -65,6 +65,7 @@ Use `/hooks` in Codex to review and trust that configuration.
 
 The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
 If bookkeeping fails, the hook reports the error and lets the Codex tool continue.
+Goal history requires the `sqlite3` command with JSON output support. The installer checks it.
 
 ## Full command help
 
@@ -78,9 +79,25 @@ one-shot-tally background list
 one-shot-tally todo add TEXT --context WHY
 one-shot-tally todo list [--all]
 one-shot-tally todo done ID
+one-shot-tally goal list [--all]
+one-shot-tally goal show ID
+one-shot-tally goal resume ID
 one-shot-tally version
 one-shot-tally help|-h|--help
 ```
+
+## Resume a previous goal
+
+List unfinished goals:
+
+```sh
+one-shot-tally goal list
+```
+
+Use `goal list --all` to include completed goals. `goal show ID` prints one
+record. `goal resume ID` prints its exact objective and tells the agent to call
+Codex `create_goal`. These commands read Codex's local goal history and never
+write to it.
 
 ## Goal result and coaching
 
@@ -94,7 +111,6 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 ## Coaching signals
 
 - `/goal` work can continue across many turns. High tool-call volume does not lower the coaching score.
-- Goal progress checks use wider intervals. Repetition, passive waits, redundant tests, and unrelated scope still affect coaching.
 - Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
 - Five test runs is a normal pacing guide, not a hard cap.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
