@@ -26,6 +26,8 @@ one-shot-tally help|-h|--help
 ## Rules
 
 - Finish the requested outcome and verify edits.
+- Treat the newest request as authoritative. Stop superseded work and stay in the named repository.
+- Before external changes, confirm the target, artifact or revision, and visible acceptance result.
 - Treat coaching as advisory; never trade correctness or delivery for a score.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.
 - Never block Git, `ship-it`, or `deploy-it`.

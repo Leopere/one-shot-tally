@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.1"
+const binaryVersion = "1.10.2"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -26,6 +26,7 @@ var (
 	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
 	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
 	productionRE         = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
+	externalMutationRE   = regexp.MustCompile(`(?i)(curl\b[^\n]*(--request|-X)\s*(POST|PUT|PATCH|DELETE)\b|gh\s+api\b[^\n]*(--method|-X)\s*(POST|PUT|PATCH|DELETE)\b|\b(bw|op|vault)\b[^\n]*\b(create|delete|edit|update|move)\b|docker\s+(service\s+update|stack\s+deploy)|kubectl\s+(apply|delete)|terraform\s+apply)`)
 	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
 	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
 	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
@@ -44,6 +45,8 @@ type event struct {
 	ToolResponse     json.RawMessage `json:"tool_response"`
 	StopHookActive   bool            `json:"stop_hook_active"`
 	LastAssistantMsg string          `json:"last_assistant_message"`
+	Prompt           string          `json:"prompt"`
+	CWD              string          `json:"cwd"`
 }
 
 type pendingCall struct {
@@ -231,7 +234,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the requested outcome and verify edits. The tally score is advisory."
+		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result."
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -243,6 +246,8 @@ func runHook(r io.Reader, w io.Writer) error {
 			HookEventName:     "SessionStart",
 			AdditionalContext: context,
 		}})
+	case "UserPromptSubmit":
+		return userPromptSubmit(e, w)
 	case "PreToolUse":
 		return preToolUse(e, w)
 	case "PostToolUse":
@@ -252,6 +257,27 @@ func runHook(r io.Reader, w io.Writer) error {
 	default:
 		return writeJSON(w, hookOutput{})
 	}
+}
+
+func userPromptSubmit(e event, w io.Writer) error {
+	context := "Use the newest user request as the source of truth. Stop superseded work, resolve the exact repository and outcome, and keep side work in the TODO record."
+	if correctionPrompt(e.Prompt) {
+		context = "Correction detected: stop the previous plan and any queued external action. Re-resolve the exact repository, environment, artifact, and acceptance result from this newest request before continuing."
+	}
+	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
+		HookEventName:     "UserPromptSubmit",
+		AdditionalContext: context,
+	}})
+}
+
+func correctionPrompt(prompt string) bool {
+	prompt = strings.ToLower(prompt)
+	for _, marker := range []string{"wrong", "instead", "meant to", "stop ", "do not ", "don't ", "off the rails", "not the "} {
+		if strings.Contains(prompt, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func preToolUse(e event, w io.Writer) error {
@@ -281,6 +307,7 @@ func preToolUse(e event, w io.Writer) error {
 	isCommand := isCommandTool(e.ToolName)
 	isTest := isCommand && testRE.MatchString(command)
 	isProduction := isCommand && productionRE.MatchString(command)
+	isExternalMutation := isCommand && externalMutationRE.MatchString(command)
 	isRead := readRE.MatchString(command)
 	isPassiveWait := passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
@@ -323,6 +350,9 @@ func preToolUse(e event, w io.Writer) error {
 	var messages []string
 	if goalChange == "start" {
 		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work.")
+	}
+	if isProduction || isExternalMutation {
+		messages = append(messages, "Target check (advisory, never a gate): match the latest request to the exact repository, environment, artifact or revision, and user-visible acceptance result. If they match, execute now; do not treat command success alone as goal success.")
 	}
 	if isPassiveWait {
 		messages = append(messages, "Progress check: passive waiting adds no evidence. Detach long work, record its cleanup and wake-up target, then continue another goal step or stop.")

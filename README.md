@@ -60,7 +60,7 @@ The repository binary and installed hook are separate files. A pull, tag, or rel
 After each upgrade, rerun `./install.sh`.
 
 Installation does not enable the hook.
-Configure [Codex hooks](https://learn.chatgpt.com/docs/hooks) to run the absolute installed path for `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`.
+Configure [Codex hooks](https://learn.chatgpt.com/docs/hooks) to run the absolute installed path for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
 Use `/hooks` in Codex to review and trust that configuration.
 
 The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
@@ -111,6 +111,9 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 
 ## Coaching signals
 
+- The newest user request replaces an older plan. Stop superseded work before you continue.
+- Stay in the current repository unless the user names another target.
+- Before an external change, confirm the repository, environment, artifact or revision, and user-visible acceptance result. This check is advisory and never blocks delivery.
 - `/goal` work can continue across many turns. High tool-call volume does not lower the coaching score.
 - Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
 - Five test runs is a normal pacing guide, not a hard cap.
@@ -119,6 +122,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Command success does not prove service health.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Park useful work that is outside the requested goal. Return to it later.
+- After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.
 
 Perform exceptional history or worktree surgery manually after you make a backup.
 

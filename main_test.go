@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.1", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.2", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -623,13 +623,42 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the requested outcome", "verify edits", "score is advisory"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 300 {
+	if len(text) > 500 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
+	}
+}
+
+func TestNewestPromptResetsSupersededScope(t *testing.T) {
+	dir := t.TempDir()
+	ordinary := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Please finish the report"})
+	if text := string(mustJSON(ordinary)); !strings.Contains(text, "newest user request") || !strings.Contains(text, "exact repository") {
+		t.Fatalf("ordinary prompt guidance = %#v", ordinary)
+	}
+	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
+	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") {
+		t.Fatalf("correction guidance = %#v", corrected)
+	}
+}
+
+func TestExternalMutationGetsTargetCheckWithoutBlocking(t *testing.T) {
+	for i, command := range []string{"ship-it", "deploy-it production", "curl -X DELETE https://vault.example/items/1"} {
+		dir := t.TempDir()
+		out := hook(t, dir, map[string]any{
+			"session_id": "s", "turn_id": fmt.Sprintf("target-%d", i), "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": "action", "tool_input": map[string]any{"command": command},
+		})
+		text := string(mustJSON(out))
+		if !strings.Contains(text, "advisory, never a gate") || !strings.Contains(text, "If they match, execute now") {
+			t.Fatalf("missing target coaching for %q: %#v", command, out)
+		}
+		if strings.Contains(text, `"decision":"deny"`) || strings.Contains(text, `"decision":"block"`) {
+			t.Fatalf("target coaching blocked %q: %#v", command, out)
+		}
 	}
 }
 
