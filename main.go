@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.2"
+const binaryVersion = "1.10.3"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -351,6 +351,12 @@ func preToolUse(e event, w io.Writer) error {
 	if goalChange == "start" {
 		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work.")
 	}
+	if repeats == 2 && isAgentSpawn(e.ToolName) {
+		messages = append(messages, "Duplicate worker check: an identical subagent task already started. Reuse that worker or give the new worker a distinct bounded task.")
+	}
+	if isEdit && s.LastTestResultKnown && !s.LastTestPassed {
+		messages = append(messages, "Failure containment: keep this edit tied to the observed failing check. Do not add a new mode, module, or sibling-repository change until the affected check passes.")
+	}
 	if isProduction || isExternalMutation {
 		messages = append(messages, "Target check (advisory, never a gate): match the latest request to the exact repository, environment, artifact or revision, and user-visible acceptance result. If they match, execute now; do not treat command success alone as goal success.")
 	}
@@ -466,12 +472,20 @@ func stop(e event, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	goalActive, err := sessionGoalActive(e.SessionID)
+	if err != nil {
+		return err
+	}
 	line := reportLine(s)
+	if goalActive {
+		line = strings.Replace(line, "Goal result: SUCCESS", "Goal result: ACTIVE (recorded work verified)", 1)
+		line = strings.Replace(line, "Goal result: NOT VERIFIED", "Goal result: ACTIVE (recorded work not verified)", 1)
+	}
 	stewardship := ""
 	if s.BackgroundRecords > s.BackgroundCompletions {
 		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
 	}
-	if !finalPassed(s) {
+	if goalActive || !finalPassed(s) {
 		return writeJSON(w, hookOutput{SystemMessage: line + ". Advisory: continue with the smallest goal-directed verification step when more work is appropriate; this hook does not block stopping or delivery." + stewardship})
 	}
 	if !s.RecordedInLifetime {
@@ -484,6 +498,11 @@ func stop(e event, w io.Writer) error {
 		}
 	}
 	return writeJSON(w, hookOutput{SystemMessage: line + stewardship})
+}
+
+func isAgentSpawn(tool string) bool {
+	tool = strings.ToLower(tool)
+	return strings.Contains(tool, "spawn_agent") || strings.Contains(tool, "task") && strings.Contains(tool, "agent")
 }
 
 func reportLine(s state) string {

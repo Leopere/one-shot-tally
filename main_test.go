@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.2", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.3", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -659,6 +659,34 @@ func TestExternalMutationGetsTargetCheckWithoutBlocking(t *testing.T) {
 		if strings.Contains(text, `"decision":"deny"`) || strings.Contains(text, `"decision":"block"`) {
 			t.Fatalf("target coaching blocked %q: %#v", command, out)
 		}
+	}
+}
+
+func TestDuplicateSubagentAndFailedCheckEditsGetAdvisoryCoaching(t *testing.T) {
+	dir := t.TempDir()
+	input := map[string]any{"agent_type": "explorer", "task_name": "scan", "message": "scan repo"}
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "workers", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": "one", "tool_input": input})
+	duplicate := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "workers", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": "two", "tool_input": input})
+	if text := string(mustJSON(duplicate)); !strings.Contains(text, "identical subagent task") || strings.Contains(text, `"decision":"block"`) {
+		t.Fatalf("duplicate worker coaching = %#v", duplicate)
+	}
+
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failure", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failure", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 1}})
+	edit := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failure", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "fix"}})
+	if text := string(mustJSON(edit)); !strings.Contains(text, "Failure containment") || !strings.Contains(text, "failing check") {
+		t.Fatalf("failed-check edit coaching = %#v", edit)
+	}
+}
+
+func TestActiveGoalIsNotReportedComplete(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{"session_id": "goal", "turn_id": "start", "hook_event_name": "PreToolUse", "tool_name": "functions.create_goal", "tool_use_id": "create", "tool_input": map[string]any{"objective": "finish"}})
+	hook(t, dir, map[string]any{"session_id": "goal", "turn_id": "start", "hook_event_name": "PostToolUse", "tool_name": "functions.create_goal", "tool_use_id": "create", "tool_response": map[string]any{"goal": map[string]any{"status": "active"}}})
+	out := hook(t, dir, map[string]any{"session_id": "goal", "turn_id": "later", "hook_event_name": "Stop"})
+	message, _ := out["systemMessage"].(string)
+	if !strings.Contains(message, "Goal result: ACTIVE") || strings.Contains(message, "Goal result: SUCCESS") {
+		t.Fatalf("active goal result = %#v", out)
 	}
 }
 
