@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.6", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.7", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -633,15 +633,19 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	}
 }
 
-func TestNewestPromptResetsSupersededScope(t *testing.T) {
+func TestNewestPromptAmendsCompatibleScope(t *testing.T) {
 	dir := t.TempDir()
 	ordinary := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Please finish the report"})
-	if text := string(mustJSON(ordinary)); !strings.Contains(text, "newest user request") || !strings.Contains(text, "exact repository") || !strings.Contains(text, "main thread integrates") || !strings.Contains(text, "Spark makes exact low-risk edits") || !strings.Contains(text, "plain English") {
+	if text := string(mustJSON(ordinary)); !strings.Contains(text, "update to the active task") || !strings.Contains(text, "Preserve compatible earlier requirements") || !strings.Contains(text, "Replace only what clearly conflicts") || !strings.Contains(text, "main thread integrates") || !strings.Contains(text, "Spark makes exact low-risk edits") || !strings.Contains(text, "plain English") {
 		t.Fatalf("ordinary prompt guidance = %#v", ordinary)
 	}
 	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
-	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate bounded tasks") || !strings.Contains(text, "Microsoft-style") {
+	text := string(mustJSON(corrected))
+	if !strings.Contains(text, "Steer detected") || !strings.Contains(text, "revise only the conflicting part") || !strings.Contains(text, "Preserve compatible earlier requirements") || !strings.Contains(text, "queued external action only if it conflicts") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate bounded tasks") || !strings.Contains(text, "Microsoft-style") {
 		t.Fatalf("correction guidance = %#v", corrected)
+	}
+	if strings.Contains(text, "stop the previous plan") || strings.Contains(text, "any queued external action") {
+		t.Fatalf("correction guidance replaces too much scope: %#v", corrected)
 	}
 }
 

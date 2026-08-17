@@ -26,7 +26,7 @@ one-shot-tally help|-h|--help
 ## Rules
 
 - Finish the requested outcome and verify edits.
-- Treat the newest request as authoritative. Stop superseded work and stay in the named repository.
+- Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
 - Before external changes, confirm the target, artifact or revision, and visible acceptance result.
 - Keep requirements, integration, authorization, and acceptance with the primary agent.
 - Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.

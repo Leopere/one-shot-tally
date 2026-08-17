@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.6"
+const binaryVersion = "1.10.7"
 
 const subagentGuidance = "The main thread integrates work. Delegate bounded tasks: explorers gather evidence, workers or implementors make changes, reviewers check work, and Spark makes exact low-risk edits. Keep sequential work and authorization in the main thread."
 
@@ -266,9 +266,9 @@ func runHook(r io.Reader, w io.Writer) error {
 }
 
 func userPromptSubmit(e event, w io.Writer) error {
-	context := "Use the newest user request as the source of truth. Stop superseded work, resolve the exact repository and outcome, and keep side work in the TODO record. " + agentGuidance
+	context := "Treat the newest request as an update to the active task. Preserve compatible earlier requirements and completed work. Replace only what clearly conflicts or is explicitly cancelled. Keep side work in the TODO record. " + agentGuidance
 	if correctionPrompt(e.Prompt) {
-		context = "Correction detected: stop the previous plan and any queued external action. Re-resolve the exact repository, environment, artifact, and acceptance result from this newest request before continuing. " + agentGuidance
+		context = "Steer detected: revise only the conflicting part of the plan. Preserve compatible earlier requirements and completed work. Cancel a queued external action only if it conflicts. Reconfirm the exact repository, target, and acceptance result before continuing. " + agentGuidance
 	}
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 		HookEventName:     "UserPromptSubmit",

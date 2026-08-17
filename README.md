@@ -111,7 +111,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 
 ## Coaching signals
 
-- The newest user request replaces an older plan. Stop superseded work before you continue.
+- Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
 - Stay in the current repository unless the user names another target.
 - Before an external change, confirm the repository, environment, artifact or revision, and user-visible acceptance result. This check is advisory and never blocks delivery.
 - The primary agent owns requirements, integration, authorization, and acceptance.
