@@ -17,13 +17,11 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.7"
+const binaryVersion = "1.10.8"
 
 const subagentGuidance = "The main thread integrates work. Delegate bounded tasks: explorers gather evidence, workers or implementors make changes, reviewers check work, and Spark makes exact low-risk edits. Keep sequential work and authorization in the main thread."
 
-const communicationGuidance = "Use terse, ASD-STE100-inspired and Microsoft-style plain English for non-code agent messages; preserve exact technical terms."
-
-const agentGuidance = subagentGuidance + " " + communicationGuidance
+const communicationGuidance = "Keep non-code agent messages terse and preserve exact technical terms."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -240,7 +238,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + agentGuidance
+		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + subagentGuidance + " " + communicationGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -266,9 +264,9 @@ func runHook(r io.Reader, w io.Writer) error {
 }
 
 func userPromptSubmit(e event, w io.Writer) error {
-	context := "Treat the newest request as an update to the active task. Preserve compatible earlier requirements and completed work. Replace only what clearly conflicts or is explicitly cancelled. Keep side work in the TODO record. " + agentGuidance
+	context := "Treat the newest request as an update to the active task. Preserve compatible earlier requirements and completed work. Replace only what clearly conflicts or is explicitly cancelled. Keep side work in the TODO record. " + subagentGuidance
 	if correctionPrompt(e.Prompt) {
-		context = "Steer detected: revise only the conflicting part of the plan. Preserve compatible earlier requirements and completed work. Cancel a queued external action only if it conflicts. Reconfirm the exact repository, target, and acceptance result before continuing. " + agentGuidance
+		context = "Steer detected: revise only the conflicting part of the plan. Preserve compatible earlier requirements and completed work. Cancel a queued external action only if it conflicts. Reconfirm the exact repository, target, and acceptance result before continuing. " + subagentGuidance
 	}
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 		HookEventName:     "UserPromptSubmit",
@@ -355,7 +353,7 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	var messages []string
 	if goalChange == "start" {
-		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work. "+agentGuidance)
+		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work. "+subagentGuidance)
 	}
 	if repeats == 2 && isAgentSpawn(e.ToolName) {
 		messages = append(messages, "Duplicate worker check: parallel subagents are encouraged, but an identical assignment is redundant. Reuse that worker or give the new worker a distinct bounded task.")

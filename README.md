@@ -116,7 +116,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Before an external change, confirm the repository, environment, artifact or revision, and user-visible acceptance result. This check is advisory and never blocks delivery.
 - The primary agent owns requirements, integration, authorization, and acceptance.
 - Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.
-- Use terse, ASD-STE100-inspired and Microsoft-style plain English for non-code agent messages; preserve exact technical terms.
+- Keep non-code agent messages terse and preserve exact technical terms. The hook sends this reminder once at session start, not after each prompt.
 - Do not send the same assignment to both the primary agent and a subagent.
 - `/goal` work can continue across many turns. High tool-call volume does not lower the coaching score.
 - Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
