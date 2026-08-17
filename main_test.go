@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.4", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.5", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -623,7 +623,7 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "Delegate independent bounded", "prefer Spark"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "explorers gather evidence", "workers or implementors make changes", "reviewers check work", "Spark makes exact low-risk edits", "ASD-STE100", "Microsoft Writing Style Guide", "avoid code-like prose", "preserve exact code"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
@@ -636,11 +636,11 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 func TestNewestPromptResetsSupersededScope(t *testing.T) {
 	dir := t.TempDir()
 	ordinary := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Please finish the report"})
-	if text := string(mustJSON(ordinary)); !strings.Contains(text, "newest user request") || !strings.Contains(text, "exact repository") || !strings.Contains(text, "Use the main thread to coordinate") || !strings.Contains(text, "prefer Spark") {
+	if text := string(mustJSON(ordinary)); !strings.Contains(text, "newest user request") || !strings.Contains(text, "exact repository") || !strings.Contains(text, "main thread integrates") || !strings.Contains(text, "Spark makes exact low-risk edits") || !strings.Contains(text, "plain English") {
 		t.Fatalf("ordinary prompt guidance = %#v", ordinary)
 	}
 	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
-	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate independent bounded") {
+	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate bounded tasks") || !strings.Contains(text, "Microsoft Writing Style Guide") {
 		t.Fatalf("correction guidance = %#v", corrected)
 	}
 }
