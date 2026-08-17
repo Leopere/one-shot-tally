@@ -28,6 +28,9 @@ one-shot-tally help|-h|--help
 - Finish the requested outcome and verify edits.
 - Treat the newest request as authoritative. Stop superseded work and stay in the named repository.
 - Before external changes, confirm the target, artifact or revision, and visible acceptance result.
+- Keep requirements, integration, authorization, and acceptance with the primary agent.
+- Use subagents for bounded exploration, testing, and low-risk implementation work, preferring Spark for exact low-risk tasks.
+- Never assign the same task to both the primary agent and a subagent.
 - Treat coaching as advisory; never trade correctness or delivery for a score.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.
 - Never block Git, `ship-it`, or `deploy-it`.

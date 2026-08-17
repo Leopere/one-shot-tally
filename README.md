@@ -114,6 +114,9 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - The newest user request replaces an older plan. Stop superseded work before you continue.
 - Stay in the current repository unless the user names another target.
 - Before an external change, confirm the repository, environment, artifact or revision, and user-visible acceptance result. This check is advisory and never blocks delivery.
+- The primary agent owns requirements, integration, authorization, and acceptance.
+- Use subagents for bounded exploration, testing, and low-risk implementation work; prefer Spark for exact low-risk tasks.
+- Do not send the same assignment to both the primary agent and a subagent.
 - `/goal` work can continue across many turns. High tool-call volume does not lower the coaching score.
 - Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
 - Five test runs is a normal pacing guide, not a hard cap.

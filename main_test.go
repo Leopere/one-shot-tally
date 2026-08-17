@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.3", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.4", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -623,12 +623,12 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "Delegate independent bounded", "prefer Spark"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 500 {
+	if len(text) > 750 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
 	}
 }
@@ -636,11 +636,11 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 func TestNewestPromptResetsSupersededScope(t *testing.T) {
 	dir := t.TempDir()
 	ordinary := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Please finish the report"})
-	if text := string(mustJSON(ordinary)); !strings.Contains(text, "newest user request") || !strings.Contains(text, "exact repository") {
+	if text := string(mustJSON(ordinary)); !strings.Contains(text, "newest user request") || !strings.Contains(text, "exact repository") || !strings.Contains(text, "Use the main thread to coordinate") || !strings.Contains(text, "prefer Spark") {
 		t.Fatalf("ordinary prompt guidance = %#v", ordinary)
 	}
 	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
-	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") {
+	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate independent bounded") {
 		t.Fatalf("correction guidance = %#v", corrected)
 	}
 }
@@ -667,7 +667,7 @@ func TestDuplicateSubagentAndFailedCheckEditsGetAdvisoryCoaching(t *testing.T) {
 	input := map[string]any{"agent_type": "explorer", "task_name": "scan", "message": "scan repo"}
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "workers", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": "one", "tool_input": input})
 	duplicate := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "workers", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": "two", "tool_input": input})
-	if text := string(mustJSON(duplicate)); !strings.Contains(text, "identical subagent task") || strings.Contains(text, `"decision":"block"`) {
+	if text := string(mustJSON(duplicate)); !strings.Contains(text, "parallel subagents are encouraged") || !strings.Contains(text, "identical assignment is redundant") || strings.Contains(text, `"decision":"block"`) {
 		t.Fatalf("duplicate worker coaching = %#v", duplicate)
 	}
 

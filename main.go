@@ -17,7 +17,9 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.3"
+const binaryVersion = "1.10.4"
+
+const subagentGuidance = "Use the main thread to coordinate and integrate. Delegate independent bounded exploration, testing, review, and exact low-risk edits; prefer Spark for exact low-risk tasks."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -234,7 +236,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result."
+		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + subagentGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -260,9 +262,9 @@ func runHook(r io.Reader, w io.Writer) error {
 }
 
 func userPromptSubmit(e event, w io.Writer) error {
-	context := "Use the newest user request as the source of truth. Stop superseded work, resolve the exact repository and outcome, and keep side work in the TODO record."
+	context := "Use the newest user request as the source of truth. Stop superseded work, resolve the exact repository and outcome, and keep side work in the TODO record. " + subagentGuidance
 	if correctionPrompt(e.Prompt) {
-		context = "Correction detected: stop the previous plan and any queued external action. Re-resolve the exact repository, environment, artifact, and acceptance result from this newest request before continuing."
+		context = "Correction detected: stop the previous plan and any queued external action. Re-resolve the exact repository, environment, artifact, and acceptance result from this newest request before continuing. " + subagentGuidance
 	}
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 		HookEventName:     "UserPromptSubmit",
@@ -349,10 +351,10 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	var messages []string
 	if goalChange == "start" {
-		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work.")
+		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work. "+subagentGuidance)
 	}
 	if repeats == 2 && isAgentSpawn(e.ToolName) {
-		messages = append(messages, "Duplicate worker check: an identical subagent task already started. Reuse that worker or give the new worker a distinct bounded task.")
+		messages = append(messages, "Duplicate worker check: parallel subagents are encouraged, but an identical assignment is redundant. Reuse that worker or give the new worker a distinct bounded task.")
 	}
 	if isEdit && s.LastTestResultKnown && !s.LastTestPassed {
 		messages = append(messages, "Failure containment: keep this edit tied to the observed failing check. Do not add a new mode, module, or sibling-repository change until the affected check passes.")
