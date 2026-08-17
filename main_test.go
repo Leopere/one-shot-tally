@@ -155,7 +155,7 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 		"tool_name": "functions.create_goal", "tool_use_id": "create",
 		"tool_input": map[string]any{"objective": "Deliver the requested change"},
 	})
-	if text := string(mustJSON(start)); !strings.Contains(text, "Goal mode started") || !strings.Contains(text, "High tool-call volume is expected") || strings.Contains(text, "non-code agent messages") || strings.Contains(text, "Microsoft-style") {
+	if text := string(mustJSON(start)); !strings.Contains(text, "Goal mode started") || !strings.Contains(text, "High tool-call volume is expected") || !strings.Contains(text, "spark_worker") || !strings.Contains(text, "security judgment") || !strings.Contains(text, "overlapping ownership") || strings.Contains(text, "non-code agent messages") || strings.Contains(text, "Microsoft-style") {
 		t.Fatalf("goal start guidance = %#v", start)
 	}
 	hook(t, dir, map[string]any{
@@ -386,7 +386,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.11.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.11.1", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -626,13 +626,41 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "explorers gather evidence", "workers or implementors make changes", "reviewers check work", "Spark makes exact low-risk edits", "non-code agent messages terse", "preserve exact technical terms"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 675 {
+	if len(text) > 1000 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
+	}
+}
+
+func TestSparkRoutingReviewUsesSessionEvidenceAndAppearsOnce(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	base := state{Revision: 3, SuccessfulEdits: 2, VerifiedRevision: 3, Tests: 1, TestPasses: 1, LastTestPassed: true, LastTestResultKnown: true}
+	first, err := claimSparkRoutingReview("unused", base)
+	if err != nil || !strings.Contains(first, "none used this run") || !strings.Contains(first, "spark_worker") || !strings.Contains(first, "do not invent one") {
+		t.Fatalf("missing Spark routing review: %q err=%v", first, err)
+	}
+	second, err := claimSparkRoutingReview("unused", base)
+	if err != nil || second != "" {
+		t.Fatalf("Spark routing review repeated: %q err=%v", second, err)
+	}
+	if err := recordSessionSparkCall("used-earlier-turn"); err != nil {
+		t.Fatal(err)
+	}
+	used, err := claimSparkRoutingReview("used-earlier-turn", base)
+	if err != nil || used != "" {
+		t.Fatalf("session Spark use still received a reminder: %q err=%v", used, err)
+	}
+	retry := base
+	retry.Revision = 2
+	retry.SuccessfulEdits = 1
+	retry.VerifiedRevision = 2
+	if review, err := claimSparkRoutingReview("failed-then-passed", retry); err != nil || review != "" {
+		t.Fatalf("one successful edit received a Spark reminder: %q err=%v", review, err)
 	}
 }
 

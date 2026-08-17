@@ -128,9 +128,11 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Command success does not prove service health.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Repeated-call reminders use widening intervals. Concrete edits and passing checks reset their cadence.
+- Before main-thread implementation starts, actively look for an exact low-risk independent edit for a spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread.
 - A verified edited revision is ship-ready. Run `ship-it`; it invokes `deploy-it` only for an already trusted, tracked `.deploy-it.json` contract.
 - Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent a deployment command or create trust without exact authorization.
 - Park useful work that is outside the requested goal. Return to it later.
+- Never duplicate ownership between primary and Spark; primary retains architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, integration, and final acceptance.
 - After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.
 
 Perform exceptional history or worktree surgery manually after you make a backup.

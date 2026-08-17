@@ -17,9 +17,11 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.11.0"
+const binaryVersion = "1.11.1"
 
-const subagentGuidance = "The main thread integrates work. Delegate bounded tasks: explorers gather evidence, workers or implementors make changes, reviewers check work, and Spark makes exact low-risk edits. Keep sequential work and authorization in the main thread."
+const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
+
+const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent edit with a disjoint target for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive or billable work, sequential work, or overlapping ownership."
 
 const communicationGuidance = "Keep non-code agent messages terse and preserve exact technical terms."
 
@@ -84,6 +86,7 @@ type state struct {
 	MaxTestMillis          int64                  `json:"max_test_millis"`
 	RedundantTestMillis    int64                  `json:"redundant_test_millis"`
 	Revision               int                    `json:"revision"`
+	SuccessfulEdits        int                    `json:"successful_edits"`
 	VerifiedRevision       int                    `json:"verified_revision"`
 	InspectionStreak       int                    `json:"inspection_streak"`
 	MaxInspectionStreak    int                    `json:"max_inspection_streak"`
@@ -117,7 +120,9 @@ type state struct {
 }
 
 type sessionSteer struct {
-	CorrectionStreak int `json:"correction_streak"`
+	CorrectionStreak int  `json:"correction_streak"`
+	SparkCalls       int  `json:"spark_calls"`
+	SparkReviewShown bool `json:"spark_review_shown"`
 }
 
 type backgroundJob struct {
@@ -257,7 +262,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + subagentGuidance + " " + communicationGuidance
+		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -414,7 +419,8 @@ func preToolUse(e event, w io.Writer) error {
 
 	s.TotalCalls++
 	callUnits := 4
-	if isSparkCall(e) {
+	sparkCall := isSparkCall(e)
+	if sparkCall {
 		callUnits = 1
 		s.SparkCalls++
 	}
@@ -453,7 +459,7 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	var messages []string
 	if goalChange == "start" {
-		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work. "+subagentGuidance)
+		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work. "+subagentGuidance+" "+sparkGuidance)
 	}
 	if repeats == 2 && isAgentSpawn(e.ToolName) {
 		messages = append(messages, "Duplicate worker check: parallel subagents are encouraged, but an identical assignment is redundant. Reuse that worker or give the new worker a distinct bounded task.")
@@ -489,6 +495,11 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	if err := save(p, s); err != nil {
 		return err
+	}
+	if sparkCall {
+		if err := recordSessionSparkCall(e.SessionID); err != nil {
+			return err
+		}
 	}
 	if len(messages) == 0 {
 		return writeJSON(w, hookOutput{})
@@ -548,6 +559,9 @@ func postToolUse(e event, w io.Writer) error {
 				s.Fingerprints = map[string]int{}
 				s.PassiveWaitStreak = 0
 			}
+		}
+		if pending.Edit && passed {
+			s.SuccessfulEdits++
 		}
 		if pending.Test {
 			duration := testDurationMillis(e.ToolResponse, pending.StartedAt)
@@ -645,7 +659,11 @@ func stop(e event, w io.Writer) error {
 	}
 	closure := ""
 	if !e.StopHookActive && !goalActive {
-		closure = closingLoop(s, deployContract)
+		sparkReview, err := claimSparkRoutingReview(e.SessionID, s)
+		if err != nil {
+			return err
+		}
+		closure = closingLoop(s, deployContract) + sparkReview
 	}
 	if goalActive || !finalPassed(s) {
 		return writeJSON(w, hookOutput{SystemMessage: line + ". Advisory: continue with the smallest goal-directed verification step when more work is appropriate; this hook does not block stopping or delivery." + stewardship + closure})
@@ -1120,6 +1138,51 @@ func resetSessionSteer(sessionID string) error {
 	}
 	steer.CorrectionStreak = 0
 	return saveSessionSteer(p, steer)
+}
+
+func recordSessionSparkCall(sessionID string) error {
+	p, err := sessionSteerPath(sessionID)
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	steer, err := loadSessionSteer(p)
+	if err != nil {
+		return err
+	}
+	steer.SparkCalls++
+	return saveSessionSteer(p, steer)
+}
+
+func claimSparkRoutingReview(sessionID string, s state) (string, error) {
+	if !finalPassed(s) || s.SuccessfulEdits < 2 {
+		return "", nil
+	}
+	p, err := sessionSteerPath(sessionID)
+	if err != nil {
+		return "", err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = unlock() }()
+	steer, err := loadSessionSteer(p)
+	if err != nil {
+		return "", err
+	}
+	if steer.SparkCalls > 0 || steer.SparkReviewShown {
+		return "", nil
+	}
+	steer.SparkReviewShown = true
+	if err := saveSessionSteer(p, steer); err != nil {
+		return "", err
+	}
+	return " Spark review: none used this run. Before the next implementation, check whether an exact, low-risk, independent edit with disjoint ownership exists for spark_worker; do not invent one.", nil
 }
 
 func goalMarkerPath(sessionID string) (string, error) {

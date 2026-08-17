@@ -29,6 +29,9 @@ one-shot-tally help|-h|--help
 - Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
 - Before external changes, confirm the target, artifact or revision, and visible acceptance result.
 - Keep requirements, integration, authorization, and acceptance with the primary agent.
+- Before main-thread implementation, actively look for an exact low-risk, independent edit for Spark. When one exists, give exact files, expected behavior, and validation.
+- Keep architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, and final acceptance in the primary thread.
+- Do not duplicate ownership between primary and Spark; assign disjoint edits only.
 - Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.
 - Keep non-code agent messages terse and preserve exact technical terms.
 - Never assign the same task to both the primary agent and a subagent.
