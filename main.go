@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.8"
+const binaryVersion = "1.11.0"
 
 const subagentGuidance = "The main thread integrates work. Delegate bounded tasks: explorers gather evidence, workers or implementors make changes, reviewers check work, and Spark makes exact low-risk edits. Keep sequential work and authorization in the main thread."
 
@@ -64,41 +64,60 @@ type pendingCall struct {
 	TodoAdd            bool      `json:"todo_add"`
 	TodoDone           bool      `json:"todo_done"`
 	GoalTransition     string    `json:"goal_transition,omitempty"`
+	Edit               bool      `json:"edit,omitempty"`
+	Shipping           bool      `json:"shipping,omitempty"`
+	Deploying          bool      `json:"deploying,omitempty"`
 }
 
 type state struct {
-	StateVersion          int                    `json:"state_version"`
-	SessionID             string                 `json:"session_id"`
-	TurnID                string                 `json:"turn_id"`
-	UpdatedAt             time.Time              `json:"updated_at"`
-	TotalCalls            int                    `json:"total_calls"`
-	CallCostUnits         int                    `json:"call_cost_units"`
-	SparkCalls            int                    `json:"spark_calls"`
-	Tests                 int                    `json:"tests"`
-	TestPasses            int                    `json:"test_passes"`
-	TestFailures          int                    `json:"test_failures"`
-	TotalTestMillis       int64                  `json:"total_test_millis"`
-	MaxTestMillis         int64                  `json:"max_test_millis"`
-	RedundantTestMillis   int64                  `json:"redundant_test_millis"`
-	Revision              int                    `json:"revision"`
-	VerifiedRevision      int                    `json:"verified_revision"`
-	InspectionStreak      int                    `json:"inspection_streak"`
-	MaxInspectionStreak   int                    `json:"max_inspection_streak"`
-	RepeatedWarnings      int                    `json:"repeated_warnings"`
-	ProductionCompletions int                    `json:"production_completions"`
-	BackgroundRecords     int                    `json:"background_records"`
-	BackgroundCompletions int                    `json:"background_completions"`
-	PassiveWaits          int                    `json:"passive_waits"`
-	TodosParked           int                    `json:"todos_parked"`
-	TodosCompleted        int                    `json:"todos_completed"`
-	ToolCounts            map[string]int         `json:"tool_counts"`
-	Fingerprints          map[string]int         `json:"fingerprints"`
-	TestFingerprints      map[string]int         `json:"test_fingerprints"`
-	Pending               map[string]pendingCall `json:"pending"`
-	LastTestPassed        bool                   `json:"last_test_passed"`
-	LastTestResultKnown   bool                   `json:"last_test_result_known"`
-	RecordedInLifetime    bool                   `json:"recorded_in_lifetime"`
-	GoalScoped            bool                   `json:"goal_scoped"`
+	StateVersion           int                    `json:"state_version"`
+	SessionID              string                 `json:"session_id"`
+	TurnID                 string                 `json:"turn_id"`
+	UpdatedAt              time.Time              `json:"updated_at"`
+	TotalCalls             int                    `json:"total_calls"`
+	CallCostUnits          int                    `json:"call_cost_units"`
+	SparkCalls             int                    `json:"spark_calls"`
+	Tests                  int                    `json:"tests"`
+	TestPasses             int                    `json:"test_passes"`
+	TestFailures           int                    `json:"test_failures"`
+	TotalTestMillis        int64                  `json:"total_test_millis"`
+	MaxTestMillis          int64                  `json:"max_test_millis"`
+	RedundantTestMillis    int64                  `json:"redundant_test_millis"`
+	Revision               int                    `json:"revision"`
+	VerifiedRevision       int                    `json:"verified_revision"`
+	InspectionStreak       int                    `json:"inspection_streak"`
+	MaxInspectionStreak    int                    `json:"max_inspection_streak"`
+	RepeatedWarnings       int                    `json:"repeated_warnings"`
+	ProductionCompletions  int                    `json:"production_completions"`
+	ShipCompletions        int                    `json:"ship_completions"`
+	DeployCompletions      int                    `json:"deploy_completions"`
+	ShipAttempts           int                    `json:"ship_attempts"`
+	DeployAttempts         int                    `json:"deploy_attempts"`
+	BackgroundRecords      int                    `json:"background_records"`
+	BackgroundCompletions  int                    `json:"background_completions"`
+	PassiveWaits           int                    `json:"passive_waits"`
+	PassiveWaitStreak      int                    `json:"passive_wait_streak"`
+	TodosParked            int                    `json:"todos_parked"`
+	TodosCompleted         int                    `json:"todos_completed"`
+	ToolCounts             map[string]int         `json:"tool_counts"`
+	Fingerprints           map[string]int         `json:"fingerprints"`
+	TestFingerprints       map[string]int         `json:"test_fingerprints"`
+	Pending                map[string]pendingCall `json:"pending"`
+	LastTestPassed         bool                   `json:"last_test_passed"`
+	LastTestResultKnown    bool                   `json:"last_test_result_known"`
+	LastEditSucceeded      bool                   `json:"last_edit_succeeded"`
+	LastEditResultKnown    bool                   `json:"last_edit_result_known"`
+	LastEditResultRevision int                    `json:"last_edit_result_revision"`
+	LastShipSucceeded      bool                   `json:"last_ship_succeeded"`
+	LastShipResultKnown    bool                   `json:"last_ship_result_known"`
+	LastDeploySucceeded    bool                   `json:"last_deploy_succeeded"`
+	LastDeployResultKnown  bool                   `json:"last_deploy_result_known"`
+	RecordedInLifetime     bool                   `json:"recorded_in_lifetime"`
+	GoalScoped             bool                   `json:"goal_scoped"`
+}
+
+type sessionSteer struct {
+	CorrectionStreak int `json:"correction_streak"`
 }
 
 type backgroundJob struct {
@@ -264,24 +283,97 @@ func runHook(r io.Reader, w io.Writer) error {
 }
 
 func userPromptSubmit(e event, w io.Writer) error {
-	context := "Treat the newest request as an update to the active task. Preserve compatible earlier requirements and completed work. Replace only what clearly conflicts or is explicitly cancelled. Keep side work in the TODO record. " + subagentGuidance
-	if correctionPrompt(e.Prompt) {
-		context = "Steer detected: revise only the conflicting part of the plan. Preserve compatible earlier requirements and completed work. Cancel a queued external action only if it conflicts. Reconfirm the exact repository, target, and acceptance result before continuing. " + subagentGuidance
+	p, err := sessionSteerPath(e.SessionID)
+	if err != nil {
+		return err
 	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	steer, err := loadSessionSteer(p)
+	if err != nil {
+		return err
+	}
+	if !correctionPrompt(e.Prompt) {
+		return writeJSON(w, hookOutput{})
+	}
+	steer.CorrectionStreak++
+	if err := saveSessionSteer(p, steer); err != nil {
+		return err
+	}
+	context := correctionGuidance(steer.CorrectionStreak)
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
 		HookEventName:     "UserPromptSubmit",
 		AdditionalContext: context,
 	}})
 }
 
+func correctionGuidance(streak int) string {
+	switch {
+	case streak <= 1:
+		return "Thanks for the correction. Adjust only the conflicting part, preserve compatible work, and confirm the target before the next external action."
+	case streak == 2:
+		return "Understood. This is another correction, so pause briefly and recheck the exact repository, target, and visible acceptance result before the next action. Preserve work that still fits."
+	default:
+		return "Please stop and realign before the next action. Corrections are repeating. Reconfirm the exact repository, target, authorization, and visible acceptance result; keep only work that still fits."
+	}
+}
+
 func correctionPrompt(prompt string) bool {
 	prompt = strings.ToLower(prompt)
-	for _, marker := range []string{"wrong", "instead", "meant to", "stop ", "do not ", "don't ", "off the rails", "not the "} {
+	for _, marker := range []string{"wrong", "instead", "meant to", "stop ", "stop,", "stop:", "do not ", "don't ", "off the rails", "not the "} {
 		if strings.Contains(prompt, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func deliveryInvocations(command string) (shipping, deploying bool) {
+	if strings.ContainsAny(command, ";&|\n") {
+		return false, false
+	}
+	fields := strings.Fields(command)
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return false, false
+	}
+	commandName := filepath.Base(fields[0])
+	subcommand := ""
+	if len(fields) > 1 {
+		subcommand = fields[1]
+	}
+	switch commandName {
+	case "ship-it":
+		shipping = !oneOf(subcommand, "start", "install", "update", "version", "help", "skill", "-h", "--help")
+	case "deploy-it":
+		deploying = !oneOf(subcommand, "check", "trust", "install", "version", "help", "skill", "-h", "--help")
+	}
+	return shipping, deploying
+}
+
+func oneOf(value string, options ...string) bool {
+	for _, option := range options {
+		if value == option {
+			return true
+		}
+	}
+	return false
+}
+
+func deployContractPresent(cwd string) bool {
+	if strings.TrimSpace(cwd) == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(cwd, ".deploy-it.json"))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return exec.Command("git", "-C", cwd, "ls-files", "--error-unmatch", ".deploy-it.json").Run() == nil
 }
 
 func preToolUse(e event, w io.Writer) error {
@@ -310,7 +402,8 @@ func preToolUse(e event, w io.Writer) error {
 	isEdit := e.ToolName == "apply_patch" || e.ToolName == "Edit" || e.ToolName == "Write"
 	isCommand := isCommandTool(e.ToolName)
 	isTest := isCommand && testRE.MatchString(command)
-	isProduction := isCommand && productionRE.MatchString(command)
+	isShipping, isDeploying := deliveryInvocations(command)
+	isProduction := isCommand && !strings.ContainsAny(command, ";&|\n") && (productionRE.MatchString(command) || isShipping || isDeploying)
 	isExternalMutation := isCommand && externalMutationRE.MatchString(command)
 	isRead := readRE.MatchString(command)
 	isPassiveWait := passiveWait(e, command)
@@ -347,9 +440,16 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	if isPassiveWait {
 		s.PassiveWaits++
+		s.PassiveWaitStreak++
+	}
+	if isShipping {
+		s.ShipAttempts++
+	}
+	if isDeploying {
+		s.DeployAttempts++
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying}
 	}
 	var messages []string
 	if goalChange == "start" {
@@ -365,14 +465,24 @@ func preToolUse(e event, w io.Writer) error {
 		messages = append(messages, "Target check (advisory, never a gate): match the latest request to the exact repository, environment, artifact or revision, and user-visible acceptance result. If they match, execute now; do not treat command success alone as goal success.")
 	}
 	if isPassiveWait {
-		messages = append(messages, "Progress check: passive waiting adds no evidence. Detach long work, record its cleanup and wake-up target, then continue another goal step or stop.")
+		if message := pacedSteer(s.PassiveWaitStreak, "A gentle note: passive waiting adds no evidence. Detach long work and record its cleanup and wake-up target.", "A friendly nudge: passive waiting is repeating. Please record the job once and continue another useful step.", "A clear steer: repeated passive waiting is stalling the goal. Stop polling; use the recorded wake-up path or stop cleanly."); message != "" {
+			messages = append(messages, message)
+		}
 	}
 	if isCommand && detachedTmuxRE.MatchString(command) && !isBackgroundRecord {
 		messages = append(messages, "Progress check: record this detached job, its cleanup command, and its tmux pane. Completion can then wake the agent without polling.")
 	}
-	if repeats == 3 {
+	if repeats > 1 {
+		message := pacedSteer(repeats-1,
+			fmt.Sprintf("A gentle note: %s received the same input again. Reuse the result if it is still current.", e.ToolName),
+			fmt.Sprintf("A friendly nudge: %s has repeated the same input 4 times. Please use the existing evidence. Next: %s", e.ToolName, nextAction(s)),
+			fmt.Sprintf("A clear steer: %s keeps receiving the same input. Stop repeating it unless state changed. Next: %s", e.ToolName, nextAction(s)))
+		if message != "" {
+			messages = append(messages, message)
+		}
+	}
+	if repeats == 4 {
 		s.RepeatedWarnings++
-		messages = append(messages, fmt.Sprintf("Progress check: %s received the same input 3 times. Use the existing result. Next: %s", e.ToolName, nextAction(s)))
 	}
 	if isTest && s.Tests == 6 {
 		messages = append(messages, "Six test runs. Avoid rerunning passing checks; continue any verification correctness requires.")
@@ -384,6 +494,19 @@ func preToolUse(e event, w io.Writer) error {
 		return writeJSON(w, hookOutput{})
 	}
 	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}})
+}
+
+func pacedSteer(occurrence int, gentle, firmer, clear string) string {
+	switch {
+	case occurrence == 1:
+		return gentle
+	case occurrence == 3:
+		return firmer
+	case occurrence >= 6 && (occurrence-6)%6 == 0:
+		return clear
+	default:
+		return ""
+	}
 }
 
 func nextAction(s state) string {
@@ -416,6 +539,16 @@ func postToolUse(e event, w io.Writer) error {
 	pending, ok := s.Pending[e.ToolUseID]
 	if ok {
 		delete(s.Pending, e.ToolUseID)
+		passed := responsePassed(e.ToolResponse)
+		if pending.Edit && pending.Revision >= s.LastEditResultRevision {
+			s.LastEditResultKnown = true
+			s.LastEditSucceeded = passed
+			s.LastEditResultRevision = pending.Revision
+			if passed {
+				s.Fingerprints = map[string]int{}
+				s.PassiveWaitStreak = 0
+			}
+		}
 		if pending.Test {
 			duration := testDurationMillis(e.ToolResponse, pending.StartedAt)
 			s.TotalTestMillis += duration
@@ -425,12 +558,13 @@ func postToolUse(e event, w io.Writer) error {
 			if pending.RepeatedTest {
 				s.RedundantTestMillis += duration
 			}
-			passed := responsePassed(e.ToolResponse)
 			s.LastTestResultKnown = true
 			s.LastTestPassed = passed
 			if passed {
 				s.TestPasses++
 				s.VerifiedRevision = pending.Revision
+				s.Fingerprints = map[string]int{}
+				s.PassiveWaitStreak = 0
 			} else {
 				s.TestFailures++
 			}
@@ -443,6 +577,20 @@ func postToolUse(e event, w io.Writer) error {
 		}
 		if pending.Production && responsePassed(e.ToolResponse) {
 			s.ProductionCompletions++
+		}
+		if pending.Shipping && passed {
+			s.ShipCompletions++
+		}
+		if pending.Shipping {
+			s.LastShipResultKnown = true
+			s.LastShipSucceeded = passed
+		}
+		if pending.Deploying {
+			s.LastDeployResultKnown = true
+			s.LastDeploySucceeded = passed
+			if passed {
+				s.DeployCompletions++
+			}
 		}
 		if pending.TodoAdd && responsePassed(e.ToolResponse) {
 			s.TodosParked++
@@ -459,6 +607,11 @@ func postToolUse(e event, w io.Writer) error {
 	if err := save(p, s); err != nil {
 		return err
 	}
+	if ok && responsePassed(e.ToolResponse) && (pending.Edit || pending.Test) {
+		if err := resetSessionSteer(e.SessionID); err != nil {
+			return err
+		}
+	}
 	return writeJSON(w, hookOutput{})
 }
 
@@ -467,6 +620,7 @@ func stop(e event, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	deployContract := deployContractPresent(e.CWD)
 	unlock, err := acquireStateLock(p)
 	if err != nil {
 		return err
@@ -489,8 +643,12 @@ func stop(e event, w io.Writer) error {
 	if s.BackgroundRecords > s.BackgroundCompletions {
 		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
 	}
+	closure := ""
+	if !e.StopHookActive && !goalActive {
+		closure = closingLoop(s, deployContract)
+	}
 	if goalActive || !finalPassed(s) {
-		return writeJSON(w, hookOutput{SystemMessage: line + ". Advisory: continue with the smallest goal-directed verification step when more work is appropriate; this hook does not block stopping or delivery." + stewardship})
+		return writeJSON(w, hookOutput{SystemMessage: line + ". Advisory: continue with the smallest goal-directed verification step when more work is appropriate; this hook does not block stopping or delivery." + stewardship + closure})
 	}
 	if !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
@@ -501,7 +659,38 @@ func stop(e event, w io.Writer) error {
 			return err
 		}
 	}
-	return writeJSON(w, hookOutput{SystemMessage: line + stewardship})
+	return writeJSON(w, hookOutput{SystemMessage: line + stewardship + closure})
+}
+
+func closingLoop(s state, deployContract bool) string {
+	if s.Revision == 0 {
+		return ""
+	}
+	if !finalPassed(s) {
+		return " Closing loop: verify the current revision before shipping."
+	}
+	if !s.LastEditResultKnown || s.LastEditResultRevision != s.Revision {
+		return " Closing loop: confirm that the edit completed successfully before shipping."
+	}
+	if s.LastDeployResultKnown && !s.LastDeploySucceeded {
+		return " Closing loop: deploy-it did not complete. Do not rerun it automatically; diagnose the preserved failure before another authorized deployment."
+	}
+	if s.LastShipResultKnown && !s.LastShipSucceeded {
+		return " Closing loop: ship-it did not complete cleanly, and Git may already be shipped. Preserve the failure, diagnose it, and do not rerun a failed deployment automatically."
+	}
+	if s.DeployCompletions > 0 {
+		return " Closing loop: shipping and deployment completed. Confirm the user-visible acceptance result."
+	}
+	if s.ShipCompletions > 0 {
+		if deployContract {
+			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result; do not create deployment trust without exact authorization."
+		}
+		return " Closing loop: shipping completed. No tracked .deploy-it.json is present, so deployment is intentionally skipped."
+	}
+	if deployContract {
+		return " Closing loop: verified changes are ship-ready. Run ship-it; it will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Confirm the user-visible acceptance result."
+	}
+	return " Closing loop: verified changes are ship-ready. Run ship-it. No tracked .deploy-it.json means deployment is intentionally skipped."
 }
 
 func isAgentSpawn(tool string) bool {
@@ -520,7 +709,7 @@ func reportLine(s state) string {
 		mode = " | Run mode: /goal (high tool-call volume expected)"
 		coaching = "advisory; tool-call volume not scored"
 	}
-	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Delivery actions: %d completed | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, numericScore(s), coaching)
+	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Delivery actions: %d completed (%d shipped, %d deployed) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, numericScore(s), coaching)
 }
 
 func numericScore(s state) int {
@@ -583,6 +772,9 @@ func numericScore(s state) int {
 func completedTests(s state) int { return s.TestPasses + s.TestFailures }
 
 func finalPassed(s state) bool {
+	if s.LastEditResultKnown && !s.LastEditSucceeded {
+		return false
+	}
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return false
 	}
@@ -862,6 +1054,72 @@ func statePath(e event) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(e.SessionID + ":" + e.TurnID))
 	return filepath.Join(dir, hex.EncodeToString(sum[:12])+".json"), nil
+}
+
+func sessionSteerPath(sessionID string) (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return filepath.Join(dir, "steer-"+hex.EncodeToString(sum[:12])+".state"), nil
+}
+
+func loadSessionSteer(path string) (sessionSteer, error) {
+	var steer sessionSteer
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return steer, nil
+	}
+	if err != nil {
+		return steer, err
+	}
+	if err := json.Unmarshal(b, &steer); err != nil {
+		if quarantineErr := quarantineState(path); quarantineErr != nil {
+			return sessionSteer{}, quarantineErr
+		}
+		return sessionSteer{}, nil
+	}
+	return steer, nil
+}
+
+func saveSessionSteer(path string, steer sessionSteer) error {
+	b, err := json.Marshal(steer)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".steer-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func resetSessionSteer(sessionID string) error {
+	p, err := sessionSteerPath(sessionID)
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+	steer, err := loadSessionSteer(p)
+	if err != nil || steer.CorrectionStreak == 0 {
+		return err
+	}
+	steer.CorrectionStreak = 0
+	return saveSessionSteer(p, steer)
 }
 
 func goalMarkerPath(sessionID string) (string, error) {

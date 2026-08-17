@@ -57,8 +57,11 @@ func TestMechanicalTallyAndCoachingScore(t *testing.T) {
 		base["tool_use_id"] = string(rune('a' + i))
 		base["tool_input"] = map[string]any{"command": "git status --short"}
 		out := hook(t, dir, base)
-		if i == 3 && !strings.Contains(string(mustJSON(out)), "received the same input 3 times") {
-			t.Fatalf("missing repetition warning: %#v", out)
+		if i == 2 && !strings.Contains(string(mustJSON(out)), "gentle note") {
+			t.Fatalf("missing first repetition steer: %#v", out)
+		}
+		if i == 3 && strings.Contains(string(mustJSON(out)), "nudge") {
+			t.Fatalf("repetition steer ignored its cooldown: %#v", out)
 		}
 	}
 	base["tool_use_id"] = "test-1"
@@ -234,7 +237,7 @@ func TestVerifiedStopReportsWithoutBlocking(t *testing.T) {
 		t.Fatalf("unexpected stop output: %#v", out)
 	}
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
-	if out["decision"] == "block" {
+	if out["decision"] == "block" || strings.Contains(out["systemMessage"].(string), "Closing loop:") {
 		t.Fatalf("stop looped: %#v", out)
 	}
 	life, err := loadLifetime()
@@ -383,7 +386,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.8", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.11.0", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -636,16 +639,206 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 func TestNewestPromptAmendsCompatibleScope(t *testing.T) {
 	dir := t.TempDir()
 	ordinary := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Please finish the report"})
-	if text := string(mustJSON(ordinary)); !strings.Contains(text, "update to the active task") || !strings.Contains(text, "Preserve compatible earlier requirements") || !strings.Contains(text, "Replace only what clearly conflicts") || !strings.Contains(text, "main thread integrates") || !strings.Contains(text, "Spark makes exact low-risk edits") || strings.Contains(text, "non-code agent messages") || strings.Contains(text, "Microsoft-style") {
-		t.Fatalf("ordinary prompt guidance = %#v", ordinary)
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
 	}
 	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
 	text := string(mustJSON(corrected))
-	if !strings.Contains(text, "Steer detected") || !strings.Contains(text, "revise only the conflicting part") || !strings.Contains(text, "Preserve compatible earlier requirements") || !strings.Contains(text, "queued external action only if it conflicts") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate bounded tasks") || strings.Contains(text, "non-code agent messages") || strings.Contains(text, "Microsoft-style") {
+	if !strings.Contains(text, "Thanks for the correction") || !strings.Contains(text, "conflicting part") || !strings.Contains(text, "confirm the target") || strings.Contains(text, "stop and realign") {
 		t.Fatalf("correction guidance = %#v", corrected)
 	}
-	if strings.Contains(text, "stop the previous plan") || strings.Contains(text, "any queued external action") {
-		t.Fatalf("correction guidance replaces too much scope: %#v", corrected)
+	second := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "second", "hook_event_name": "UserPromptSubmit", "prompt": "Wrong repository; use the named target"})
+	if text := string(mustJSON(second)); !strings.Contains(text, "another correction") || !strings.Contains(text, "pause briefly") {
+		t.Fatalf("second correction did not increase gently: %#v", second)
+	}
+	third := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "third", "hook_event_name": "UserPromptSubmit", "prompt": "No, stop and recheck it"})
+	if text := string(mustJSON(third)); !strings.Contains(text, "stop and realign") || !strings.Contains(text, "Corrections are repeating") {
+		t.Fatalf("repeated corrections did not become clear: %#v", third)
+	}
+}
+
+func TestCorrectionToneResetsAfterProgress(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "one", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, use the other target"})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "two", "hook_event_name": "UserPromptSubmit", "prompt": "Wrong target again"})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "work", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "progress"}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "work", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "three", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, one more correction"})
+	if text := string(mustJSON(out)); !strings.Contains(text, "Thanks for the correction") || strings.Contains(text, "another correction") {
+		t.Fatalf("progress did not reset correction tone: %#v", out)
+	}
+}
+
+func TestRepeatedCallSteersUseWideningIntervalsAndReset(t *testing.T) {
+	dir := t.TempDir()
+	wants := map[int]string{2: "gentle note", 4: "friendly nudge", 7: "clear steer"}
+	for i := 1; i <= 7; i++ {
+		out := hook(t, dir, map[string]any{
+			"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("read-%d", i),
+			"tool_input": map[string]any{"command": "git status --short"},
+		})
+		text := strings.ToLower(string(mustJSON(out)))
+		if want, ok := wants[i]; ok {
+			if !strings.Contains(text, want) {
+				t.Fatalf("call %d missing %q: %#v", i, want, out)
+			}
+		} else if strings.Contains(text, "gentle note") || strings.Contains(text, "friendly nudge") || strings.Contains(text, "clear steer") {
+			t.Fatalf("call %d ignored widening interval: %#v", i, out)
+		}
+	}
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "progress"}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+	first := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "after-1", "tool_input": map[string]any{"command": "git status --short"}})
+	second := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "after-2", "tool_input": map[string]any{"command": "git status --short"}})
+	if string(mustJSON(first)) != "{}" || !strings.Contains(strings.ToLower(string(mustJSON(second))), "gentle note") {
+		t.Fatalf("progress did not reset repeated-call cadence: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestDeliveryInvocationClassification(t *testing.T) {
+	tests := []struct {
+		command          string
+		shipping, deploy bool
+	}{
+		{"ship-it", true, false},
+		{"/usr/local/bin/ship-it --remote origin", true, false},
+		{"ship-it start", false, false},
+		{"git push origin main", false, false},
+		{"git push --dry-run origin main", false, false},
+		{"deploy-it --commit abc --branch main", false, true},
+		{"deploy-it check", false, false},
+		{"ship-it && deploy-it --commit abc --branch main", false, false},
+		{"ship-it || true", false, false},
+		{"deploy-it; true", false, false},
+	}
+	for _, test := range tests {
+		shipping, deploying := deliveryInvocations(test.command)
+		if shipping != test.shipping || deploying != test.deploy {
+			t.Fatalf("deliveryInvocations(%q) = %v,%v want %v,%v", test.command, shipping, deploying, test.shipping, test.deploy)
+		}
+	}
+}
+
+func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
+	for _, withContract := range []bool{false, true} {
+		t.Run(fmt.Sprintf("contract-%v", withContract), func(t *testing.T) {
+			dir := t.TempDir()
+			repo := t.TempDir()
+			if withContract {
+				if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+					t.Fatalf("git init: %v %s", err, out)
+				}
+				if err := os.WriteFile(filepath.Join(repo, ".deploy-it.json"), []byte(`{"version":1,"after_ship":true}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("git", "-C", repo, "add", ".deploy-it.json").CombinedOutput(); err != nil {
+					t.Fatalf("git add: %v %s", err, out)
+				}
+			}
+			common := map[string]any{"session_id": "s", "turn_id": "delivery", "cwd": repo}
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+			ready := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "Stop"})
+			message := ready["systemMessage"].(string)
+			if !strings.Contains(message, "ship-ready") || !strings.Contains(message, "Run ship-it") {
+				t.Fatalf("verified stop did not close shipping loop: %#v", ready)
+			}
+			if withContract && (!strings.Contains(message, "deploy-it contract") || !strings.Contains(message, "already trusted")) {
+				t.Fatalf("contract handoff guidance = %#v", ready)
+			}
+			if !withContract && !strings.Contains(message, "deployment is intentionally skipped") {
+				t.Fatalf("absent-contract guidance = %#v", ready)
+			}
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
+			done := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "Stop"})
+			doneMessage := done["systemMessage"].(string)
+			if withContract && (!strings.Contains(doneMessage, "shipping completed") || !strings.Contains(doneMessage, "Confirm the ship-it deploy-it handoff")) {
+				t.Fatalf("successful shipping did not preserve deploy proof boundary: %#v", done)
+			}
+			if !withContract && !strings.Contains(doneMessage, "shipping completed") {
+				t.Fatalf("successful shipping not recorded: %#v", done)
+			}
+		})
+	}
+}
+
+func TestFailedEditCannotBecomeShipReady(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "failed-edit"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "bad change"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 1}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
+	message := out["systemMessage"].(string)
+	if !strings.Contains(message, "NOT VERIFIED") || strings.Contains(message, "ship-ready") || strings.Contains(message, "Run ship-it") {
+		t.Fatalf("failed edit was treated as ship-ready: %#v", out)
+	}
+}
+
+func TestOutOfOrderEditResultsFollowNewestRevision(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		newestExit    int
+		olderExit     int
+		wantShipReady bool
+	}{
+		{"newest-fails", 1, 0, false},
+		{"newest-passes", 0, 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			common := map[string]any{"session_id": test.name, "turn_id": "concurrent-edits"}
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "older", "tool_input": map[string]any{"patch": "older"}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "newest", "tool_input": map[string]any{"patch": "newest"}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "newest", "tool_response": map[string]any{"exit_code": test.newestExit}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "older", "tool_response": map[string]any{"exit_code": test.olderExit}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+			out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
+			shipReady := strings.Contains(out["systemMessage"].(string), "ship-ready")
+			if shipReady != test.wantShipReady {
+				t.Fatalf("newest revision result was overwritten: ready=%v output=%#v", shipReady, out)
+			}
+		})
+	}
+}
+
+func TestFailedShipOrDeployIsNotRetriedByClosingLoop(t *testing.T) {
+	for _, command := range []string{"ship-it", "deploy-it --commit abc --branch main"} {
+		t.Run(command, func(t *testing.T) {
+			dir := t.TempDir()
+			common := map[string]any{"session_id": "s", "turn_id": command}
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "delivery", "tool_input": map[string]any{"command": command}})
+			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "delivery", "tool_response": map[string]any{"exit_code": 1}})
+			out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
+			message := out["systemMessage"].(string)
+			if !strings.Contains(message, "did not complete") || strings.Contains(message, "Run ship-it") {
+				t.Fatalf("failed delivery was treated as retryable: %#v", out)
+			}
+		})
+	}
+}
+
+func TestConcreteProgressResetsPassiveWaitTone(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 6; i++ {
+		hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": fmt.Sprintf("wait-%d", i), "tool_input": map[string]any{"command": fmt.Sprintf("sleep %d", i)}})
+	}
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "progress"}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "wait-after", "tool_input": map[string]any{"command": "sleep 99"}})
+	text := strings.ToLower(string(mustJSON(out)))
+	if !strings.Contains(text, "gentle note") || strings.Contains(text, "clear steer") {
+		t.Fatalf("progress did not reset passive-wait tone: %#v", out)
 	}
 }
 
@@ -689,7 +882,7 @@ func TestActiveGoalIsNotReportedComplete(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "goal", "turn_id": "start", "hook_event_name": "PostToolUse", "tool_name": "functions.create_goal", "tool_use_id": "create", "tool_response": map[string]any{"goal": map[string]any{"status": "active"}}})
 	out := hook(t, dir, map[string]any{"session_id": "goal", "turn_id": "later", "hook_event_name": "Stop"})
 	message, _ := out["systemMessage"].(string)
-	if !strings.Contains(message, "Goal result: ACTIVE") || strings.Contains(message, "Goal result: SUCCESS") {
+	if !strings.Contains(message, "Goal result: ACTIVE") || strings.Contains(message, "Goal result: SUCCESS") || strings.Contains(message, "Closing loop:") {
 		t.Fatalf("active goal result = %#v", out)
 	}
 }

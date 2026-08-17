@@ -27,6 +27,8 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Keeps durable notes for deferred work and long-running background jobs.
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
+- Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
+- Closes verified work with `ship-it` and supports the trusted `deploy-it` handoff when the repository defines it.
 - Exposes human-readable and JSON reports for later comparison.
 
 It does not understand product intent, prove service health, or replace human
@@ -125,6 +127,9 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - A successful delivery action earns one capped outcome credit.
 - Command success does not prove service health.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
+- Repeated-call reminders use widening intervals. Concrete edits and passing checks reset their cadence.
+- A verified edited revision is ship-ready. Run `ship-it`; it invokes `deploy-it` only for an already trusted, tracked `.deploy-it.json` contract.
+- Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent a deployment command or create trust without exact authorization.
 - Park useful work that is outside the requested goal. Return to it later.
 - After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.
 
