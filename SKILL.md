@@ -30,7 +30,7 @@ one-shot-tally help|-h|--help
 - Before external changes, confirm the target, artifact or revision, and visible acceptance result.
 - Keep requirements, integration, authorization, and acceptance with the primary agent.
 - Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.
-- For non-code agent messages, use plain English inspired by ASD-STE100 and the Microsoft Writing Style Guide. Explain uncommon terms, avoid code-like prose, and preserve exact code, product, and domain terms.
+- Use terse, ASD-STE100-inspired and Microsoft-style plain English for non-code agent messages; preserve exact technical terms.
 - Never assign the same task to both the primary agent and a subagent.
 - Treat coaching as advisory; never trade correctness or delivery for a score.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.

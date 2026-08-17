@@ -17,11 +17,11 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.10.5"
+const binaryVersion = "1.10.6"
 
 const subagentGuidance = "The main thread integrates work. Delegate bounded tasks: explorers gather evidence, workers or implementors make changes, reviewers check work, and Spark makes exact low-risk edits. Keep sequential work and authorization in the main thread."
 
-const communicationGuidance = "For non-code agent messages, use plain English inspired by ASD-STE100 and the Microsoft Writing Style Guide. Explain uncommon terms, avoid code-like prose, and preserve exact code and domain terms."
+const communicationGuidance = "Use terse, ASD-STE100-inspired and Microsoft-style plain English for non-code agent messages; preserve exact technical terms."
 
 const agentGuidance = subagentGuidance + " " + communicationGuidance
 

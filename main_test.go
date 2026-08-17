@@ -383,7 +383,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.10.5", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.10.6", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -623,12 +623,12 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "explorers gather evidence", "workers or implementors make changes", "reviewers check work", "Spark makes exact low-risk edits", "ASD-STE100", "Microsoft Writing Style Guide", "avoid code-like prose", "preserve exact code"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "explorers gather evidence", "workers or implementors make changes", "reviewers check work", "Spark makes exact low-risk edits", "ASD-STE100-inspired", "Microsoft-style", "preserve exact technical terms"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 750 {
+	if len(text) > 675 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
 	}
 }
@@ -640,7 +640,7 @@ func TestNewestPromptResetsSupersededScope(t *testing.T) {
 		t.Fatalf("ordinary prompt guidance = %#v", ordinary)
 	}
 	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
-	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate bounded tasks") || !strings.Contains(text, "Microsoft Writing Style Guide") {
+	if text := string(mustJSON(corrected)); !strings.Contains(text, "Correction detected") || !strings.Contains(text, "queued external action") || !strings.Contains(text, "acceptance result") || !strings.Contains(text, "Delegate bounded tasks") || !strings.Contains(text, "Microsoft-style") {
 		t.Fatalf("correction guidance = %#v", corrected)
 	}
 }
