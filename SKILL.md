@@ -36,9 +36,12 @@ one-shot-tally help|-h|--help
 - Keep non-code agent messages terse and preserve exact technical terms.
 - Never assign the same task to both the primary agent and a subagent.
 - Treat coaching as advisory; never trade correctness or delivery for a score.
-- Start correction steers politely. Increase directness only after repeated corrections, and reset after concrete progress.
-- Space repeated-call steers farther apart as they recur. Do not repeat guidance on every call.
-- At closing, move verified edits to `ship-it`. Let `ship-it` hand off to `deploy-it` only through an already trusted, tracked `.deploy-it.json` contract.
+- Keep ordinary prompts quiet. Emit prompt guidance only when a correction is detected.
+- Start correction steers politely. Increase directness only after repeated corrections, and reset after a successful edit or passing check.
+- Space repeated-call steers farther apart as they recur. Reset after a successful edit or passing check; do not repeat guidance on every call.
+- After a verified run with at least two successful edits and no session Spark use, emit one review that asks whether safe Spark work existed. Never invent work to satisfy the review.
+- At closing, recommend `ship-it` only after the latest edit succeeds and the current revision is verified. Record outcomes; do not execute delivery from the hook.
+- Detect a tracked `.deploy-it.json`, but leave contract validation, trust, and handoff to `ship-it` and `deploy-it`. Never retry failed delivery automatically.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.
 - Never block Git, `ship-it`, or `deploy-it`.
 

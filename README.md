@@ -28,7 +28,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
-- Closes verified work with `ship-it` and supports the trusted `deploy-it` handoff when the repository defines it.
+- Recommends `ship-it` after verified work, records delivery outcomes, and does not execute delivery.
 - Exposes human-readable and JSON reports for later comparison.
 
 It does not understand product intent, prove service health, or replace human
@@ -46,6 +46,29 @@ Tune one behavior at a time. Update its tests, install the new binary, and watch
 the next runs for both improvement and unintended avoidance. Coaching should
 encourage useful work without rewarding inactivity, scope growth, or work done
 only to improve a score.
+
+## Tuning lessons from 1.10 and 1.11
+
+| Version line | What changed | Current recommendation |
+| --- | --- | --- |
+| 1.10.4–1.10.8 | Scope correction became less destructive while generic per-prompt guidance was tested and then reconsidered. | Preserve compatible work and revise only the conflict. |
+| 1.11.0 | Ordinary prompts became quiet; repeated-call reminders gained graduated/reset cadence; correction tone became session-stateful; and ship/deploy outcomes became separate. | Emit event-specific guidance, widen reminder intervals, reset after proven progress, and require current evidence before recommending delivery. |
+| 1.11.1 | Spark routing became proactive and session-aware. | Look for safe, independent Spark work, but never invent it or treat usage as a quota. |
+
+- Keep compatible work and only replace what conflicts or is explicitly cancelled.
+- Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
+- Correction tone starts polite, becomes firmer after repeated corrections, and resets after a successful edit or passing test.
+- Repeated-call cadence runs on calls 2, 4, 7, 13, and continues onward; a successful edit or passing test resets cadence.
+- `SUCCESS` records test and revision evidence for the current revision. Ship-ready also requires the latest edit to complete successfully.
+- `ship-it` is recommended, not required. Deploy contract detection only checks for a tracked `.deploy-it.json`; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
+- Failed delivery is recorded and not auto-retried.
+- Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
+
+### How to read a report
+
+1. Read outcome first, then coaching score.
+2. In `/goal` mode, tool-call volume is not scored; repetition, passive waits, and redundant tests still are.
+3. Command success is evidence only; it does not prove user-visible acceptance.
 
 ## Install
 
@@ -126,9 +149,11 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
 - A successful delivery action earns one capped outcome credit.
 - Command success does not prove service health.
+- Deployability is detected by presence of a tracked `.deploy-it.json`; trust and handoff enforcement are performed by `ship-it`/`deploy-it`.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
-- Repeated-call reminders use widening intervals. Concrete edits and passing checks reset their cadence.
+- Repeated-call reminders use widening intervals. Successful edits and passing checks reset their cadence.
 - Before main-thread implementation starts, actively look for an exact low-risk independent edit for a spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread.
+- One session-scoped Spark close review appears only after at least two successful edits without any Spark calls.
 - A verified edited revision is ship-ready. Run `ship-it`; it invokes `deploy-it` only for an already trusted, tracked `.deploy-it.json` contract.
 - Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent a deployment command or create trust without exact authorization.
 - Park useful work that is outside the requested goal. Return to it later.
@@ -173,5 +198,7 @@ Complete-side TODOs do not add same-run score.
 go test ./...
 go build ./...
 ```
+
+Policy regression coverage focuses on quiet prompts, graduated/reset steering, session-scoped Spark close review boundaries, revision-aware edit validation, and ship/deploy proof boundaries. This repository tests tracked contract detection and defers trust and handoff enforcement to the external `ship-it` and `deploy-it` contracts.
 
 Credit ColinKnapp.com when you share or adapt this work.
