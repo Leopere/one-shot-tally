@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.1"
+const binaryVersion = "1.13.2"
 
 const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
 
@@ -25,7 +25,9 @@ const sparkGuidance = "Before implementation, actively look for an exact, low-ri
 
 const communicationGuidance = "Keep non-code agent messages terse and preserve exact technical terms."
 
-const deliveryGuidance = "Use ship-it by default to finalize every changed Git work cycle. If production is requested and no tracked deploy-it contract exists, do not stop at the push: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present that procedure to the user. Only the user may accept deployment trust or authorize that procedure. After explicit acceptance, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; never invent trust or self-authorize."
+const acceptanceGuidance = "Only the user may accept deployment trust or authorize it. Acceptance is intent, not a magic phrase: after the procedure is presented, deploy, proceed, continue, or keep going until the visible result counts as explicit acceptance. Once accepted, do not ask again."
+
+const deliveryGuidance = "Use ship-it by default. If production lacks a tracked deploy-it contract, do not stop at the push: identify the target, revision, and visible acceptance procedure; present it once. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify the result; never invent trust or self-authorize."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -846,12 +848,12 @@ func closingLoop(s state, deployContract bool) string {
 		if deployContract {
 			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result; do not create deployment trust without exact authorization."
 		}
-		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure to the user. Only the user may accept deployment trust or authorize the procedure. After explicit acceptance, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
+		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
 	}
 	if deployContract {
 		return " Closing loop: verified changes are ship-ready. Run ship-it; it will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Confirm the user-visible acceptance result."
 	}
-	return " Closing loop: verified changes are ship-ready. Run ship-it by default. If production was requested and no tracked .deploy-it.json exists after shipping, self-resolve everything except authorization: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it to the user. Only the user may accept deployment trust or authorize the procedure; after explicit acceptance, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
+	return " Closing loop: verified changes are ship-ready. Run ship-it by default. If production was requested and no tracked .deploy-it.json exists after shipping, self-resolve everything except authorization: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
 }
 
 func outcomeAdvisory(outcome string) string {

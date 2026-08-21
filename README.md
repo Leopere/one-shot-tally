@@ -60,6 +60,8 @@ only to improve a score.
 | 1.11.3 | Known wrapped test failures stopped counting as passes. | Inspect structured results and runner failure summaries when a tool wrapper doesn't expose the command's exit code directly. |
 | 1.12.0 | Reports stopped inferring goal success from tool names, shell text, and test output. | Report observed activity honestly; verify only an edited revision with an ordered, explicit passing result. |
 | 1.13.0 | A successful Git push could end a production-requested task when no deployment contract existed. | Run `ship-it` by default; resolve a missing deployment procedure from evidence and require the user's explicit acceptance before trust or deployment. |
+| 1.13.1 | Unknown test telemetry forced the same 25 score as an edit with no test. | Keep the revision unverified and not ship-ready, but do not punish an agent for telemetry availability it cannot control. |
+| 1.13.2 | Agents repeatedly requested a magic approval phrase after the user had already authorized a presented production procedure. | Treat clear instructions to deploy, proceed, continue, or keep going until the visible result as explicit acceptance, then execute without asking again. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -167,7 +169,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Command success does not prove service health.
 - A successful `git push`/`ship-it` with deployment skipped is not production completion when production deployment was requested.
 - Deployability is detected by presence of a tracked `.deploy-it.json`; trust and handoff enforcement are performed by `ship-it`/`deploy-it`.
-- If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this to the user and only proceeds after explicit user authorization. The agent must not invent trust or self-authorize.
+- If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this once and proceeds after explicit user authorization. Acceptance is intent, not a magic phrase: clear instructions to deploy, proceed, continue, or keep going until the visible result count. Once accepted, the agent must execute without asking again. The agent must not invent trust or self-authorize.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Repeated-call reminders use widening intervals. Successful edits and passing checks reset their cadence.
 - Before main-thread implementation starts, actively look for an exact low-risk independent edit for a spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread.

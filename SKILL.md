@@ -28,6 +28,7 @@ one-shot-tally help|-h|--help
 - Finish the requested outcome and verify edits.
 - Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
 - Before external changes, confirm the target, artifact or revision, and visible acceptance result.
+- Treat acceptance as intent, not a magic phrase. After presenting the target and visible acceptance procedure, a clear instruction to deploy, proceed, continue, or keep going until the result counts as explicit acceptance. Do not ask again once accepted.
 - Keep requirements, integration, authorization, and acceptance with the primary agent.
 - Before main-thread implementation, actively look for an exact low-risk, independent edit for Spark. When one exists, give exact files, expected behavior, and validation.
 - Keep architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, and final acceptance in the primary thread.
