@@ -55,6 +55,7 @@ only to improve a score.
 | 1.11.0 | Ordinary prompts became quiet; repeated-call reminders gained graduated/reset cadence; correction tone became session-stateful; and ship/deploy outcomes became separate. | Emit event-specific guidance, widen reminder intervals, reset after proven progress, and require current evidence before recommending delivery. |
 | 1.11.1 | Spark routing became proactive and session-aware. | Look for safe, independent Spark work, but never invent it or treat usage as a quota. |
 | 1.11.2 | Empty turns stopped counting as successful work. | Require at least one direct recorded attempt to learn or act; prompts, coordination, passive waits, and bookkeeping alone aren't progress. |
+| 1.11.3 | Known wrapped test failures stopped counting as passes. | Inspect structured results and runner failure summaries when a tool wrapper doesn't expose the command's exit code directly. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.

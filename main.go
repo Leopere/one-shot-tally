@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.11.2"
+const binaryVersion = "1.11.3"
 
 const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
 
@@ -43,6 +43,8 @@ var (
 	shellPrefixRE        = regexp.MustCompile(`(?i)^\s*(env\s+)?([a-z_][a-z0-9_]*=\S+\s+)*`)
 	shellSetupRE         = regexp.MustCompile(`(?i)^\s*(cd\b|export\b|set\b|unset\b|source\b|\.\s+)`)
 	shellNoOpRE          = regexp.MustCompile(`(?i)^\s*(true|:|echo|printf)(\s|$)`)
+	testFailureOutputRE  = regexp.MustCompile(`(?im)(^|\n)\s*(?:\x1b\[[0-9;]*m)*(--- FAIL:|FAIL\s*$|FAIL\t|FAILED\s+\S+::|npm ERR!|error: test failed|test result:\s*FAILED|BUILD FAILED|FAILURES!|ERROR collecting\b|Test Suites:\s*[1-9][0-9]* failed|Tests:\s*[1-9][0-9]* failed|[1-9][0-9]* failed(?:,|\s+in|\s*$)|[1-9][0-9]* errors?(?:,|\s+in|\s*$)|\[ERROR\].*(Failures|Errors):\s*[1-9])`)
+	ansiEscapeRE         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 )
 
 type event struct {
@@ -556,9 +558,13 @@ func postToolUse(e event, w io.Writer) error {
 		return err
 	}
 	pending, ok := s.Pending[e.ToolUseID]
+	passed := false
 	if ok {
 		delete(s.Pending, e.ToolUseID)
-		passed := responsePassed(e.ToolResponse)
+		passed = responsePassed(e.ToolResponse)
+		if pending.Test {
+			passed = testResponsePassed(e.ToolResponse)
+		}
 		if pending.Edit && pending.Revision >= s.LastEditResultRevision {
 			s.LastEditResultKnown = true
 			s.LastEditSucceeded = passed
@@ -629,7 +635,7 @@ func postToolUse(e event, w io.Writer) error {
 	if err := save(p, s); err != nil {
 		return err
 	}
-	if ok && responsePassed(e.ToolResponse) && (pending.Edit || pending.Test) {
+	if ok && passed && (pending.Edit || pending.Test) {
 		if err := resetSessionSteer(e.SessionID); err != nil {
 			return err
 		}
@@ -983,6 +989,56 @@ func responsePassed(raw json.RawMessage) bool {
 		return false
 	}
 	return !containsFailure(v)
+}
+
+func testResponsePassed(raw json.RawMessage) bool {
+	if !responsePassed(raw) {
+		return false
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	return !containsTestFailureSignal(value)
+}
+
+func containsTestFailureSignal(value any) bool {
+	switch item := value.(type) {
+	case string:
+		clean := ansiEscapeRE.ReplaceAllString(item, "")
+		if testFailureOutputRE.MatchString(clean) {
+			return true
+		}
+		for _, line := range strings.Split(clean, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || line[0] != '{' && line[0] != '[' {
+				continue
+			}
+			var nested any
+			if json.Unmarshal([]byte(line), &nested) == nil && containsTestFailureSignal(nested) {
+				return true
+			}
+		}
+		return false
+	case map[string]any:
+		for key, child := range item {
+			if strings.EqualFold(key, "action") {
+				if action, ok := child.(string); ok && strings.EqualFold(strings.TrimSpace(action), "fail") {
+					return true
+				}
+			}
+			if containsTestFailureSignal(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if containsTestFailureSignal(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func testDurationMillis(raw json.RawMessage, started time.Time) int64 {
