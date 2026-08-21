@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.11.3"
+const binaryVersion = "1.12.0"
 
 const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
 
@@ -31,20 +31,21 @@ var (
 	// verification for the current revision.
 	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
 	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
-	productionRE         = regexp.MustCompile("(?i)(git\\s+push|ship-it\\s*$|(depl" + "oy|rele" + "ase)[^;&|]*(prod|production)|prod\\s+depl" + "oy|kubectl\\s+apply|docker\\s+stack\\s+depl" + "oy|terraform\\s+apply)")
 	externalMutationRE   = regexp.MustCompile(`(?i)(curl\b[^\n]*(--request|-X)\s*(POST|PUT|PATCH|DELETE)\b|gh\s+api\b[^\n]*(--method|-X)\s*(POST|PUT|PATCH|DELETE)\b|\b(bw|op|vault)\b[^\n]*\b(create|delete|edit|update|move)\b|docker\s+(service\s+update|stack\s+deploy)|kubectl\s+(apply|delete)|terraform\s+apply)`)
 	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
 	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
+	gitCommitRE          = regexp.MustCompile(`(?i)^\s*git\s+commit\b`)
 	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
 	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
 	todoAddRE            = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+add\b`)
 	todoDoneRE           = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+done\b`)
-	bookkeepingRE        = regexp.MustCompile(`(?i)(^|[;&|])\s*(env\s+)?([a-z_][a-z0-9_]*=\S+\s+)*(\S*/)?one-shot-tally\s+(status|grade|version|help|goal|background|todo)\b`)
-	shellPrefixRE        = regexp.MustCompile(`(?i)^\s*(env\s+)?([a-z_][a-z0-9_]*=\S+\s+)*`)
-	shellSetupRE         = regexp.MustCompile(`(?i)^\s*(cd\b|export\b|set\b|unset\b|source\b|\.\s+)`)
-	shellNoOpRE          = regexp.MustCompile(`(?i)^\s*(true|:|echo|printf)(\s|$)`)
-	testFailureOutputRE  = regexp.MustCompile(`(?im)(^|\n)\s*(?:\x1b\[[0-9;]*m)*(--- FAIL:|FAIL\s*$|FAIL\t|FAILED\s+\S+::|npm ERR!|error: test failed|test result:\s*FAILED|BUILD FAILED|FAILURES!|ERROR collecting\b|Test Suites:\s*[1-9][0-9]* failed|Tests:\s*[1-9][0-9]* failed|[1-9][0-9]* failed(?:,|\s+in|\s*$)|[1-9][0-9]* errors?(?:,|\s+in|\s*$)|\[ERROR\].*(Failures|Errors):\s*[1-9])`)
-	ansiEscapeRE         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+)
+
+const (
+	outcomeNoWork   = "NO OBSERVED WORK"
+	outcomeActivity = "ACTIVITY OBSERVED"
+	outcomeFailed   = "FAILED"
+	outcomeVerified = "VERIFIED"
 )
 
 type event struct {
@@ -75,55 +76,69 @@ type pendingCall struct {
 	Edit               bool      `json:"edit,omitempty"`
 	Shipping           bool      `json:"shipping,omitempty"`
 	Deploying          bool      `json:"deploying,omitempty"`
+	TestEligible       bool      `json:"test_eligible,omitempty"`
+	WorktreeKnown      bool      `json:"worktree_known,omitempty"`
+	WorktreeSnapshot   string    `json:"worktree_snapshot,omitempty"`
+	WorkingDirectory   string    `json:"working_directory,omitempty"`
+	Sequence           int       `json:"sequence,omitempty"`
 }
 
 type state struct {
-	StateVersion           int                    `json:"state_version"`
-	SessionID              string                 `json:"session_id"`
-	TurnID                 string                 `json:"turn_id"`
-	UpdatedAt              time.Time              `json:"updated_at"`
-	TotalCalls             int                    `json:"total_calls"`
-	ProgressAttempts       int                    `json:"progress_attempts"`
-	CallCostUnits          int                    `json:"call_cost_units"`
-	SparkCalls             int                    `json:"spark_calls"`
-	Tests                  int                    `json:"tests"`
-	TestPasses             int                    `json:"test_passes"`
-	TestFailures           int                    `json:"test_failures"`
-	TotalTestMillis        int64                  `json:"total_test_millis"`
-	MaxTestMillis          int64                  `json:"max_test_millis"`
-	RedundantTestMillis    int64                  `json:"redundant_test_millis"`
-	Revision               int                    `json:"revision"`
-	SuccessfulEdits        int                    `json:"successful_edits"`
-	VerifiedRevision       int                    `json:"verified_revision"`
-	InspectionStreak       int                    `json:"inspection_streak"`
-	MaxInspectionStreak    int                    `json:"max_inspection_streak"`
-	RepeatedWarnings       int                    `json:"repeated_warnings"`
-	ProductionCompletions  int                    `json:"production_completions"`
-	ShipCompletions        int                    `json:"ship_completions"`
-	DeployCompletions      int                    `json:"deploy_completions"`
-	ShipAttempts           int                    `json:"ship_attempts"`
-	DeployAttempts         int                    `json:"deploy_attempts"`
-	BackgroundRecords      int                    `json:"background_records"`
-	BackgroundCompletions  int                    `json:"background_completions"`
-	PassiveWaits           int                    `json:"passive_waits"`
-	PassiveWaitStreak      int                    `json:"passive_wait_streak"`
-	TodosParked            int                    `json:"todos_parked"`
-	TodosCompleted         int                    `json:"todos_completed"`
-	ToolCounts             map[string]int         `json:"tool_counts"`
-	Fingerprints           map[string]int         `json:"fingerprints"`
-	TestFingerprints       map[string]int         `json:"test_fingerprints"`
-	Pending                map[string]pendingCall `json:"pending"`
-	LastTestPassed         bool                   `json:"last_test_passed"`
-	LastTestResultKnown    bool                   `json:"last_test_result_known"`
-	LastEditSucceeded      bool                   `json:"last_edit_succeeded"`
-	LastEditResultKnown    bool                   `json:"last_edit_result_known"`
-	LastEditResultRevision int                    `json:"last_edit_result_revision"`
-	LastShipSucceeded      bool                   `json:"last_ship_succeeded"`
-	LastShipResultKnown    bool                   `json:"last_ship_result_known"`
-	LastDeploySucceeded    bool                   `json:"last_deploy_succeeded"`
-	LastDeployResultKnown  bool                   `json:"last_deploy_result_known"`
-	RecordedInLifetime     bool                   `json:"recorded_in_lifetime"`
-	GoalScoped             bool                   `json:"goal_scoped"`
+	StateVersion                 int                    `json:"state_version"`
+	SessionID                    string                 `json:"session_id"`
+	TurnID                       string                 `json:"turn_id"`
+	UpdatedAt                    time.Time              `json:"updated_at"`
+	TotalCalls                   int                    `json:"total_calls"`
+	CallCostUnits                int                    `json:"call_cost_units"`
+	SparkCalls                   int                    `json:"spark_calls"`
+	Tests                        int                    `json:"tests"`
+	TestPasses                   int                    `json:"test_passes"`
+	TestFailures                 int                    `json:"test_failures"`
+	TotalTestMillis              int64                  `json:"total_test_millis"`
+	MaxTestMillis                int64                  `json:"max_test_millis"`
+	RedundantTestMillis          int64                  `json:"redundant_test_millis"`
+	Revision                     int                    `json:"revision"`
+	SuccessfulEdits              int                    `json:"successful_edits"`
+	VerifiedRevision             int                    `json:"verified_revision"`
+	InspectionStreak             int                    `json:"inspection_streak"`
+	MaxInspectionStreak          int                    `json:"max_inspection_streak"`
+	RepeatedWarnings             int                    `json:"repeated_warnings"`
+	ProductionCompletions        int                    `json:"production_completions"`
+	ProductionAttempts           int                    `json:"production_attempts"`
+	ShipCompletions              int                    `json:"ship_completions"`
+	DeployCompletions            int                    `json:"deploy_completions"`
+	ShipAttempts                 int                    `json:"ship_attempts"`
+	DeployAttempts               int                    `json:"deploy_attempts"`
+	BackgroundRecords            int                    `json:"background_records"`
+	BackgroundCompletions        int                    `json:"background_completions"`
+	PassiveWaits                 int                    `json:"passive_waits"`
+	PassiveWaitStreak            int                    `json:"passive_wait_streak"`
+	TodosParked                  int                    `json:"todos_parked"`
+	TodosCompleted               int                    `json:"todos_completed"`
+	ToolCounts                   map[string]int         `json:"tool_counts"`
+	Fingerprints                 map[string]int         `json:"fingerprints"`
+	TestFingerprints             map[string]int         `json:"test_fingerprints"`
+	Pending                      map[string]pendingCall `json:"pending"`
+	LastTestPassed               bool                   `json:"last_test_passed"`
+	LastTestResultKnown          bool                   `json:"last_test_result_known"`
+	LastTestResultSequence       int                    `json:"last_test_result_sequence"`
+	LastEditSucceeded            bool                   `json:"last_edit_succeeded"`
+	LastEditResultKnown          bool                   `json:"last_edit_result_known"`
+	LastEditResultRevision       int                    `json:"last_edit_result_revision"`
+	LastShipSucceeded            bool                   `json:"last_ship_succeeded"`
+	LastShipResultKnown          bool                   `json:"last_ship_result_known"`
+	LastShipResultSequence       int                    `json:"last_ship_result_sequence"`
+	LastDeploySucceeded          bool                   `json:"last_deploy_succeeded"`
+	LastDeployResultKnown        bool                   `json:"last_deploy_result_known"`
+	LastDeployResultSequence     int                    `json:"last_deploy_result_sequence"`
+	LastProductionSucceeded      bool                   `json:"last_production_succeeded"`
+	LastProductionResultKnown    bool                   `json:"last_production_result_known"`
+	LastProductionResultSequence int                    `json:"last_production_result_sequence"`
+	LastCallSucceeded            bool                   `json:"last_call_succeeded"`
+	LastCallResultKnown          bool                   `json:"last_call_result_known"`
+	LastCallResultSequence       int                    `json:"last_call_result_sequence"`
+	RecordedInLifetime           bool                   `json:"recorded_in_lifetime"`
+	GoalScoped                   bool                   `json:"goal_scoped"`
 }
 
 type sessionSteer struct {
@@ -152,15 +167,16 @@ type todoItem struct {
 }
 
 type lifetime struct {
-	Runs              int       `json:"runs"`
-	TotalScore        int       `json:"total_score"`
-	AverageScore      float64   `json:"average_score"`
-	VerifiedRuns      int       `json:"verified_runs"`
-	TotalToolCalls    int       `json:"total_tool_calls"`
-	TotalTests        int       `json:"total_tests"`
-	TotalTestFailures int       `json:"total_test_failures"`
-	TotalTestMillis   int64     `json:"total_test_millis"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	Runs                 int       `json:"runs"`
+	TotalScore           int       `json:"total_score"`
+	AverageScore         float64   `json:"average_score"`
+	VerifiedRuns         int       `json:"verified_runs"`
+	RevisionVerifiedRuns int       `json:"revision_verified_runs"`
+	TotalToolCalls       int       `json:"total_tool_calls"`
+	TotalTests           int       `json:"total_tests"`
+	TotalTestFailures    int       `json:"total_test_failures"`
+	TotalTestMillis      int64     `json:"total_test_millis"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type codexGoal struct {
@@ -348,6 +364,9 @@ func deliveryInvocations(command string) (shipping, deploying bool) {
 		return false, false
 	}
 	fields := strings.Fields(command)
+	if len(fields) > 0 && filepath.Base(fields[0]) == "env" {
+		fields = fields[1:]
+	}
 	for len(fields) > 0 && strings.Contains(fields[0], "=") {
 		fields = fields[1:]
 	}
@@ -366,6 +385,47 @@ func deliveryInvocations(command string) (shipping, deploying bool) {
 		deploying = !oneOf(subcommand, "check", "trust", "install", "version", "help", "skill", "-h", "--help")
 	}
 	return shipping, deploying
+}
+
+func productionInvocation(command string, shipping, deploying bool) bool {
+	if shipping || deploying {
+		return true
+	}
+	if strings.ContainsAny(command, ";&|\n") {
+		return false
+	}
+	fields := strings.Fields(command)
+	if len(fields) > 0 && filepath.Base(fields[0]) == "env" {
+		fields = fields[1:]
+	}
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) < 2 {
+		return false
+	}
+	for _, field := range fields[1:] {
+		if field == "--dry-run" || strings.HasPrefix(field, "--dry-run=") {
+			return false
+		}
+	}
+	switch filepath.Base(fields[0]) {
+	case "git":
+		for _, field := range fields[2:] {
+			if field == "-n" {
+				return false
+			}
+		}
+		return fields[1] == "push"
+	case "kubectl":
+		return fields[1] == "apply"
+	case "terraform":
+		return fields[1] == "apply"
+	case "docker":
+		return len(fields) > 2 && (fields[1] == "stack" && fields[2] == "deploy" || fields[1] == "service" && fields[2] == "update")
+	default:
+		return false
+	}
 }
 
 func oneOf(value string, options ...string) bool {
@@ -413,11 +473,11 @@ func preToolUse(e event, w io.Writer) error {
 	command := commandFrom(e.ToolInput)
 	isEdit := isEditTool(e.ToolName)
 	isCommand := isCommandTool(e.ToolName)
-	isTest := isCommand && testRE.MatchString(command)
+	isTest := isCommand && testRE.MatchString(command) && standaloneTestCommand(command)
 	isShipping, isDeploying := deliveryInvocations(command)
-	isProduction := isCommand && !strings.ContainsAny(command, ";&|\n") && (productionRE.MatchString(command) || isShipping || isDeploying)
-	isExternalMutation := isCommand && externalMutationRE.MatchString(command)
+	isProduction := isCommand && productionInvocation(command, isShipping, isDeploying)
 	isRead := readRE.MatchString(command)
+	isExternalMutation := isCommand && !isRead && externalMutationRE.MatchString(command)
 	isPassiveWait := passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
@@ -425,9 +485,6 @@ func preToolUse(e event, w io.Writer) error {
 	isTodoDone := isCommand && todoDoneRE.MatchString(command)
 
 	s.TotalCalls++
-	if progressAttempt(e, command, isPassiveWait, isBackgroundRecord, isBackgroundComplete, isTodoAdd, isTodoDone, goalChange) {
-		s.ProgressAttempts++
-	}
 	callUnits := 4
 	sparkCall := isSparkCall(e)
 	if sparkCall {
@@ -460,12 +517,29 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	if isShipping {
 		s.ShipAttempts++
+		s.LastShipResultSequence = s.TotalCalls
+		s.LastShipResultKnown = false
+		s.LastShipSucceeded = false
 	}
 	if isDeploying {
 		s.DeployAttempts++
+		s.LastDeployResultSequence = s.TotalCalls
+		s.LastDeployResultKnown = false
+		s.LastDeploySucceeded = false
+	}
+	if isProduction {
+		s.ProductionAttempts++
+		s.LastProductionResultSequence = s.TotalCalls
+		s.LastProductionResultKnown = false
+		s.LastProductionSucceeded = false
+	}
+	worktreeSnapshot, worktreeKnown := "", false
+	observeCommandWorktree := isCommand && !isRead && !isPassiveWait && !isBackgroundRecord && !isBackgroundComplete && !isTodoAdd && !isTodoDone && !isShipping && !isDeploying && !gitCommitRE.MatchString(command)
+	if s.Revision > 0 && (isEdit || observeCommandWorktree) {
+		worktreeSnapshot, worktreeKnown = gitWorktreeSnapshot(e.CWD)
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
 	}
 	var messages []string
 	if goalChange == "start" {
@@ -559,16 +633,46 @@ func postToolUse(e event, w io.Writer) error {
 	}
 	pending, ok := s.Pending[e.ToolUseID]
 	passed := false
+	resultKnown, resultSucceeded := false, false
 	if ok {
 		delete(s.Pending, e.ToolUseID)
+		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse)
+		if resultKnown && pending.Sequence >= s.LastCallResultSequence {
+			s.LastCallResultKnown = true
+			s.LastCallSucceeded = resultSucceeded
+			s.LastCallResultSequence = pending.Sequence
+		}
 		passed = responsePassed(e.ToolResponse)
 		if pending.Test {
-			passed = testResponsePassed(e.ToolResponse)
+			passed = resultKnown && resultSucceeded
+		}
+		worktreeChanged, worktreeConsistent := false, true
+		if pending.WorktreeKnown {
+			worktreeConsistent = false
+			cwd := pending.WorkingDirectory
+			if strings.TrimSpace(e.CWD) != "" {
+				cwd = e.CWD
+			}
+			if snapshot, known := gitWorktreeSnapshot(cwd); known {
+				worktreeConsistent = snapshot == pending.WorktreeSnapshot
+				worktreeChanged = !worktreeConsistent
+				if worktreeChanged && !pending.Edit {
+					recordObservedWorktreeEdit(&s, resultKnown, resultSucceeded)
+					if s.LastEditSucceeded {
+						s.SuccessfulEdits++
+					}
+				}
+			}
 		}
 		if pending.Edit && pending.Revision >= s.LastEditResultRevision {
-			s.LastEditResultKnown = true
-			s.LastEditSucceeded = passed
+			s.LastEditResultKnown = resultKnown
+			s.LastEditSucceeded = resultKnown && resultSucceeded
+			if pending.WorktreeKnown {
+				s.LastEditResultKnown = worktreeChanged || resultKnown && !resultSucceeded
+				s.LastEditSucceeded = worktreeChanged && (!resultKnown || resultSucceeded)
+			}
 			s.LastEditResultRevision = pending.Revision
+			passed = s.LastEditResultKnown && s.LastEditSucceeded
 			if passed {
 				s.Fingerprints = map[string]int{}
 				s.PassiveWaitStreak = 0
@@ -586,15 +690,20 @@ func postToolUse(e event, w io.Writer) error {
 			if pending.RepeatedTest {
 				s.RedundantTestMillis += duration
 			}
-			s.LastTestResultKnown = true
-			s.LastTestPassed = passed
-			if passed {
+			if resultKnown && resultSucceeded {
 				s.TestPasses++
-				s.VerifiedRevision = pending.Revision
 				s.Fingerprints = map[string]int{}
 				s.PassiveWaitStreak = 0
-			} else {
+			} else if resultKnown {
 				s.TestFailures++
+			}
+			if pending.Sequence >= s.LastTestResultSequence {
+				s.LastTestResultSequence = pending.Sequence
+				s.LastTestResultKnown = resultKnown
+				s.LastTestPassed = resultKnown && resultSucceeded
+				if resultKnown && resultSucceeded && pending.TestEligible && worktreeConsistent && pending.Revision == s.Revision {
+					s.VerifiedRevision = pending.Revision
+				}
 			}
 		}
 		if pending.BackgroundRecord && responsePassed(e.ToolResponse) {
@@ -603,22 +712,29 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.BackgroundComplete && responsePassed(e.ToolResponse) {
 			s.BackgroundCompletions++
 		}
-		if pending.Production && responsePassed(e.ToolResponse) {
+		if pending.Production && resultKnown && resultSucceeded {
 			s.ProductionCompletions++
 		}
-		if pending.Shipping && passed {
+		if pending.Production && pending.Sequence >= s.LastProductionResultSequence {
+			s.LastProductionResultSequence = pending.Sequence
+			s.LastProductionResultKnown = resultKnown
+			s.LastProductionSucceeded = resultKnown && resultSucceeded
+		}
+		if pending.Shipping && resultKnown && resultSucceeded {
 			s.ShipCompletions++
 		}
-		if pending.Shipping {
-			s.LastShipResultKnown = true
-			s.LastShipSucceeded = passed
+		if pending.Shipping && pending.Sequence >= s.LastShipResultSequence {
+			s.LastShipResultSequence = pending.Sequence
+			s.LastShipResultKnown = resultKnown
+			s.LastShipSucceeded = resultKnown && resultSucceeded
 		}
-		if pending.Deploying {
-			s.LastDeployResultKnown = true
-			s.LastDeploySucceeded = passed
-			if passed {
-				s.DeployCompletions++
-			}
+		if pending.Deploying && pending.Sequence >= s.LastDeployResultSequence {
+			s.LastDeployResultSequence = pending.Sequence
+			s.LastDeployResultKnown = resultKnown
+			s.LastDeploySucceeded = resultKnown && resultSucceeded
+		}
+		if pending.Deploying && resultKnown && resultSucceeded {
+			s.DeployCompletions++
 		}
 		if pending.TodoAdd && responsePassed(e.ToolResponse) {
 			s.TodosParked++
@@ -664,8 +780,7 @@ func stop(e event, w io.Writer) error {
 	}
 	line := reportLine(s)
 	if goalActive {
-		line = strings.Replace(line, "Goal result: SUCCESS", "Goal result: ACTIVE (recorded work verified)", 1)
-		line = strings.Replace(line, "Goal result: NOT VERIFIED", "Goal result: ACTIVE (recorded work not verified)", 1)
+		line += " | Goal state: ACTIVE"
 	}
 	stewardship := ""
 	if s.BackgroundRecords > s.BackgroundCompletions {
@@ -680,7 +795,7 @@ func stop(e event, w io.Writer) error {
 		closure = closingLoop(s, deployContract) + sparkReview
 	}
 	if goalActive || !finalPassed(s) {
-		return writeJSON(w, hookOutput{SystemMessage: line + ". Advisory: continue with the smallest goal-directed verification step when more work is appropriate; this hook does not block stopping or delivery." + stewardship + closure})
+		return writeJSON(w, hookOutput{SystemMessage: line + ". " + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure})
 	}
 	if !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
@@ -695,20 +810,32 @@ func stop(e event, w io.Writer) error {
 }
 
 func closingLoop(s state, deployContract bool) string {
-	if s.Revision == 0 {
-		return ""
-	}
-	if !finalPassed(s) {
-		return " Closing loop: verify the current revision before shipping."
-	}
-	if !s.LastEditResultKnown || s.LastEditResultRevision != s.Revision {
-		return " Closing loop: confirm that the edit completed successfully before shipping."
-	}
 	if s.LastDeployResultKnown && !s.LastDeploySucceeded {
 		return " Closing loop: deploy-it did not complete. Do not rerun it automatically; diagnose the preserved failure before another authorized deployment."
 	}
 	if s.LastShipResultKnown && !s.LastShipSucceeded {
 		return " Closing loop: ship-it did not complete cleanly, and Git may already be shipped. Preserve the failure, diagnose it, and do not rerun a failed deployment automatically."
+	}
+	if s.DeployAttempts > 0 && !s.LastDeployResultKnown {
+		return " Closing loop: deploy-it returned no explicit result. Inspect deployment state before another authorized attempt; do not retry automatically."
+	}
+	if s.ShipAttempts > 0 && !s.LastShipResultKnown {
+		return " Closing loop: ship-it returned no explicit result, and Git may already be shipped. Inspect repository and deployment state before retrying."
+	}
+	if s.LastProductionResultKnown && !s.LastProductionSucceeded {
+		return " Closing loop: the recorded delivery action did not complete. Preserve its failure and inspect external state before retrying."
+	}
+	if s.ProductionAttempts > 0 && !s.LastProductionResultKnown {
+		return " Closing loop: the recorded delivery action returned no explicit result. Inspect external state before retrying."
+	}
+	if s.Revision == 0 {
+		return ""
+	}
+	if !currentEditReady(s) {
+		return " Closing loop: confirm that the edit completed successfully before shipping."
+	}
+	if !finalPassed(s) {
+		return " Closing loop: verify the current revision before shipping."
 	}
 	if s.DeployCompletions > 0 {
 		return " Closing loop: shipping and deployment completed. Confirm the user-visible acceptance result."
@@ -725,29 +852,39 @@ func closingLoop(s state, deployContract bool) string {
 	return " Closing loop: verified changes are ship-ready. Run ship-it. No tracked .deploy-it.json means deployment is intentionally skipped."
 }
 
+func outcomeAdvisory(outcome string) string {
+	switch outcome {
+	case outcomeNoWork:
+		return "This hook observed no tool activity and cannot assess task completion."
+	case outcomeActivity:
+		return "This hook observed activity but cannot infer task completion or user-visible acceptance."
+	case outcomeFailed:
+		return "A recorded action or check failed; use that evidence before claiming completion."
+	default:
+		return "Recorded verification passed; confirm any required user-visible acceptance."
+	}
+}
+
 func isAgentSpawn(tool string) bool {
 	tool = strings.ToLower(tool)
 	return strings.Contains(tool, "spawn_agent") || strings.Contains(tool, "task") && strings.Contains(tool, "agent")
 }
 
 func reportLine(s state) string {
-	result := "SUCCESS"
-	if !finalPassed(s) {
-		result = "NOT VERIFIED"
-	}
 	mode := ""
 	coaching := "advisory"
 	if s.GoalScoped {
 		mode = " | Run mode: /goal (high tool-call volume expected)"
 		coaching = "advisory; tool-call volume not scored"
 	}
-	return fmt.Sprintf("Goal result: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %s total, %s redundant) | Delivery actions: %d completed (%d shipped, %d deployed) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Coaching signals: %d/100 (%s)", result, mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), completedTests(s), s.TestPasses, s.TestFailures, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, numericScore(s), coaching)
+	score := fmt.Sprintf("%d/100 (%s)", numericScore(s), coaching)
+	if !hasRecordedActivity(s) {
+		score = "N/A (no observed work)"
+	}
+	return fmt.Sprintf("Recorded outcome: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %d unknown, %s total, %s redundant) | Delivery actions: %d completed (%d shipped, %d deployed) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Coaching signals: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, score)
 }
 
 func numericScore(s state) int {
-	if s.Revision == 0 && s.ProgressAttempts == 0 {
-		return 0
-	}
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return 0
 	}
@@ -806,160 +943,191 @@ func numericScore(s state) int {
 
 func completedTests(s state) int { return s.TestPasses + s.TestFailures }
 
+func unknownTests(s state) int {
+	unknown := s.Tests - completedTests(s)
+	if unknown < 0 {
+		return 0
+	}
+	return unknown
+}
+
 func finalPassed(s state) bool {
+	return recordedOutcome(s) == outcomeVerified
+}
+
+func recordedOutcome(s state) string {
+	if (s.LastDeployResultKnown && !s.LastDeploySucceeded) || (s.LastShipResultKnown && !s.LastShipSucceeded) {
+		return outcomeFailed
+	}
+	if s.LastProductionResultKnown && !s.LastProductionSucceeded {
+		return outcomeFailed
+	}
 	if s.LastEditResultKnown && !s.LastEditSucceeded {
-		return false
+		return outcomeFailed
 	}
-	if s.TestFailures > 0 && !s.LastTestPassed {
-		return false
+	if s.LastTestResultKnown && !s.LastTestPassed {
+		return outcomeFailed
 	}
-	if s.Revision == 0 {
-		return s.ProgressAttempts > 0
+	if s.LastCallResultKnown && !s.LastCallSucceeded {
+		return outcomeFailed
 	}
-	return s.Tests > 0 && s.VerifiedRevision == s.Revision && s.LastTestPassed
+	if (s.DeployAttempts > 0 && !s.LastDeployResultKnown) || (s.ShipAttempts > 0 && !s.LastShipResultKnown) {
+		return outcomeActivity
+	}
+	if s.ProductionAttempts > 0 && !s.LastProductionResultKnown {
+		return outcomeActivity
+	}
+	if currentEditReady(s) && s.LastTestResultKnown && s.LastTestPassed && s.VerifiedRevision == s.Revision {
+		return outcomeVerified
+	}
+	if !hasRecordedActivity(s) {
+		return outcomeNoWork
+	}
+	return outcomeActivity
 }
 
-func progressAttempt(e event, command string, passive, backgroundRecord, backgroundComplete, todoAdd, todoDone bool, goalChange string) bool {
-	if backgroundRecord || backgroundComplete || todoAdd || todoDone || goalChange != "" {
-		return false
-	}
-	tool := strings.ToLower(strings.TrimSpace(e.ToolName))
-	if tool == "" {
-		return false
-	}
-	compact := strings.NewReplacer("_", "", "-", "", ".", "").Replace(tool)
-	for _, bookkeeping := range []string{"listagents", "sendmessage", "updateplan", "getgoal", "waitagent"} {
-		if strings.Contains(compact, bookkeeping) {
-			return false
-		}
-	}
-	if isCommandTool(tool) {
-		return commandProgress(command)
-	}
-	if passive {
-		return false
-	}
-	if isEditTool(tool) {
-		return true
-	}
-	for _, directWork := range []string{"web", "search", "open", "click", "screenshot", "viewimage", "imagegen", "requestuserinput"} {
-		if strings.Contains(compact, directWork) {
+func hasRecordedActivity(s state) bool {
+	return s.TotalCalls > 0 || s.Revision > 0 || s.Tests > 0 || s.ProductionAttempts > 0 || s.BackgroundRecords > 0 || s.BackgroundCompletions > 0 || s.TodosParked > 0 || s.TodosCompleted > 0
+}
+
+func currentEditReady(s state) bool {
+	return s.Revision > 0 && s.LastEditResultKnown && s.LastEditSucceeded && s.LastEditResultRevision == s.Revision
+}
+
+func hasPendingEdit(s state) bool {
+	for _, pending := range s.Pending {
+		if pending.Edit {
 			return true
 		}
 	}
 	return false
 }
 
-func commandProgress(command string) bool {
-	for _, segment := range splitShellSegments(command) {
-		segment = strings.TrimSpace(segment)
-		if segment == "" || bookkeepingRE.MatchString(segment) {
-			continue
-		}
-		bare := shellPrefixRE.ReplaceAllString(segment, "")
-		if bare == "" || passiveWaitRE.MatchString(bare) || shellSetupRE.MatchString(bare) || shellNoOpRE.MatchString(bare) && !hasUnquotedRune(bare, "<>") {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func commandHasPassiveWait(command string) bool {
-	for _, segment := range splitShellSegments(command) {
-		bare := shellPrefixRE.ReplaceAllString(strings.TrimSpace(segment), "")
-		if passiveWaitRE.MatchString(bare) {
-			return true
-		}
-	}
-	return false
-}
-
-func splitShellSegments(command string) []string {
-	var segments []string
-	start := 0
-	var quote byte
-	escaped := false
-	for i := 0; i < len(command); i++ {
-		char := command[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if char == '\\' && quote != '\'' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if char == quote {
-				quote = 0
-			}
-			continue
-		}
-		if char == '\'' || char == '"' {
-			quote = char
-			continue
-		}
-		if char == '#' && (i == 0 || shellCommentBoundary(command[i-1])) {
-			segments = append(segments, command[start:i])
-			for i < len(command) && command[i] != '\n' {
-				i++
-			}
-			if i >= len(command) {
-				return segments
-			}
-			start = i + 1
-			continue
-		}
-		if char == ';' || char == '&' || char == '|' || char == '\n' {
-			segments = append(segments, command[start:i])
-			start = i + 1
-		}
-	}
-	return append(segments, command[start:])
-}
-
-func shellCommentBoundary(char byte) bool {
-	return char == ' ' || char == '\t' || char == '\r' || char == '\n' || char == ';' || char == '&' || char == '|'
-}
-
-func hasUnquotedRune(text, wanted string) bool {
-	segments := splitShellSegments(text)
-	if len(segments) != 1 {
-		return true
-	}
-	var quote byte
-	escaped := false
-	for i := 0; i < len(text); i++ {
-		char := text[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if char == '\\' && quote != '\'' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if char == quote {
-				quote = 0
-			}
-			continue
-		}
-		if char == '\'' || char == '"' {
-			quote = char
-			continue
-		}
-		if strings.ContainsRune(wanted, rune(char)) {
-			return true
-		}
-	}
-	return false
+func recordObservedWorktreeEdit(s *state, resultKnown, resultSucceeded bool) {
+	s.Revision++
+	s.LastEditResultKnown = true
+	s.LastEditSucceeded = !resultKnown || resultSucceeded
+	s.LastEditResultRevision = s.Revision
 }
 
 func isEditTool(tool string) bool {
-	compact := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(tool)))
-	return strings.HasSuffix(compact, "applypatch") || strings.HasSuffix(compact, "edit") || strings.HasSuffix(compact, "write")
+	name := strings.ToLower(strings.TrimSpace(tool))
+	for _, separator := range []string{"__", ".", "/", ":"} {
+		if index := strings.LastIndex(name, separator); index >= 0 {
+			name = name[index+len(separator):]
+		}
+	}
+	name = strings.NewReplacer("_", "", "-", "").Replace(name)
+	return name == "applypatch" || name == "edit" || name == "write"
+}
+
+func standaloneTestCommand(command string) bool {
+	singleQuoted, doubleQuoted, escaped, comment := false, false, false, false
+	for index := 0; index < len(command); index++ {
+		character := command[index]
+		if comment {
+			if character == '\n' {
+				return false
+			}
+			continue
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if character == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if character == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if character == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if singleQuoted {
+			continue
+		}
+		if character == '`' || (character == '$' && index+1 < len(command) && command[index+1] == '(') {
+			return false
+		}
+		if doubleQuoted {
+			continue
+		}
+		if character == '#' && (index == 0 || command[index-1] == ' ' || command[index-1] == '\t') {
+			comment = true
+			continue
+		}
+		if character == ';' || character == '&' || character == '|' || character == '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func gitWorktreeSnapshot(cwd string) (string, bool) {
+	if strings.TrimSpace(cwd) == "" {
+		return "", false
+	}
+	rootOutput, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", false
+	}
+	root := strings.TrimSpace(string(rootOutput))
+	diffOutput, err := exec.Command("git", "-C", root, "diff", "--no-ext-diff", "--binary", "HEAD", "--").Output()
+	if err != nil {
+		cached, cachedErr := exec.Command("git", "-C", root, "diff", "--cached", "--no-ext-diff", "--binary", "--").Output()
+		working, workingErr := exec.Command("git", "-C", root, "diff", "--no-ext-diff", "--binary", "--").Output()
+		if cachedErr != nil || workingErr != nil {
+			return "", false
+		}
+		diffOutput = append(cached, working...)
+	}
+	pathsOutput, err := exec.Command("git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z").Output()
+	if err != nil {
+		return "", false
+	}
+	paths := bytes.Split(pathsOutput, []byte{0})
+	sort.Slice(paths, func(i, j int) bool { return bytes.Compare(paths[i], paths[j]) < 0 })
+	hash := sha256.New()
+	_, _ = hash.Write(diffOutput)
+	_, _ = hash.Write([]byte{0})
+	for _, encodedPath := range paths {
+		if len(encodedPath) == 0 {
+			continue
+		}
+		path := string(encodedPath)
+		_, _ = hash.Write(encodedPath)
+		_, _ = hash.Write([]byte{0})
+		absolutePath := filepath.Join(root, filepath.FromSlash(path))
+		info, err := os.Lstat(absolutePath)
+		if err != nil {
+			return "", false
+		}
+		_, _ = fmt.Fprintf(hash, "%d\x00%d\x00", info.Mode(), info.Size())
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(absolutePath)
+			if err != nil {
+				return "", false
+			}
+			_, _ = hash.Write([]byte(target))
+		case info.Mode().IsRegular():
+			file, err := os.Open(absolutePath)
+			if err != nil {
+				return "", false
+			}
+			_, copyErr := io.Copy(hash, file)
+			closeErr := file.Close()
+			if copyErr != nil || closeErr != nil {
+				return "", false
+			}
+		}
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil)), true
 }
 
 func passiveWait(e event, command string) bool {
@@ -977,7 +1145,7 @@ func passiveWait(e event, command string) bool {
 			return !present || strings.TrimSpace(fmt.Sprint(chars)) == ""
 		}
 	}
-	return commandHasPassiveWait(command)
+	return passiveWaitRE.MatchString(command)
 }
 
 func responsePassed(raw json.RawMessage) bool {
@@ -991,54 +1159,55 @@ func responsePassed(raw json.RawMessage) bool {
 	return !containsFailure(v)
 }
 
-func testResponsePassed(raw json.RawMessage) bool {
-	if !responsePassed(raw) {
-		return false
+func explicitResponseResult(raw json.RawMessage) (bool, bool) {
+	if len(raw) == 0 {
+		return false, false
 	}
 	var value any
 	if json.Unmarshal(raw, &value) != nil {
-		return false
+		return false, false
 	}
-	return !containsTestFailureSignal(value)
-}
-
-func containsTestFailureSignal(value any) bool {
-	switch item := value.(type) {
-	case string:
-		clean := ansiEscapeRE.ReplaceAllString(item, "")
-		if testFailureOutputRE.MatchString(clean) {
-			return true
-		}
-		for _, line := range strings.Split(clean, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || line[0] != '{' && line[0] != '[' {
-				continue
-			}
-			var nested any
-			if json.Unmarshal([]byte(line), &nested) == nil && containsTestFailureSignal(nested) {
-				return true
-			}
-		}
-		return false
-	case map[string]any:
-		for key, child := range item {
-			if strings.EqualFold(key, "action") {
-				if action, ok := child.(string); ok && strings.EqualFold(strings.TrimSpace(action), "fail") {
-					return true
+	root, ok := value.(map[string]any)
+	if !ok {
+		return false, false
+	}
+	known, failed := false, false
+	var inspect func(map[string]any, bool)
+	inspect = func(envelope map[string]any, root bool) {
+		for key, child := range envelope {
+			switch strings.ToLower(key) {
+			case "exit_code", "exitcode":
+				if number, ok := child.(float64); ok {
+					known = true
+					failed = failed || number != 0
+				}
+			case "success", "ok":
+				if root {
+					if result, ok := child.(bool); ok && !result {
+						known, failed = true, true
+					}
+				}
+			case "is_error", "iserror":
+				if root {
+					if result, ok := child.(bool); ok && result {
+						known, failed = true, true
+					}
+				}
+			case "error":
+				if root {
+					if text, ok := child.(string); ok && strings.TrimSpace(text) != "" {
+						known, failed = true, true
+					}
+				}
+			case "result", "response", "metadata", "tool_response":
+				if nested, ok := child.(map[string]any); ok {
+					inspect(nested, false)
 				}
 			}
-			if containsTestFailureSignal(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range item {
-			if containsTestFailureSignal(child) {
-				return true
-			}
 		}
 	}
-	return false
+	inspect(root, true)
+	return known, known && !failed
 }
 
 func testDurationMillis(raw json.RawMessage, started time.Time) int64 {
@@ -1144,6 +1313,11 @@ func loadState(path string, sessionID, turnID string) (state, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return state{}, err
 	}
+	normalizeState(&s)
+	return s, nil
+}
+
+func normalizeState(s *state) {
 	if s.ToolCounts == nil {
 		s.ToolCounts = map[string]int{}
 	}
@@ -1168,14 +1342,16 @@ func loadState(path string, sessionID, turnID string) (state, error) {
 	if s.StateVersion < 3 {
 		s.StateVersion = 3
 	}
+	if s.StateVersion < 4 {
+		s.StateVersion = 4
+	}
 	if s.CallCostUnits == 0 && s.TotalCalls > 0 {
 		s.CallCostUnits = s.TotalCalls * 4
 	}
-	return s, nil
 }
 
 func emptyState(sessionID, turnID string) state {
-	return state{StateVersion: 3, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
+	return state{StateVersion: 4, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
 }
 
 func decodeState(b []byte, s *state) (bool, error) {
@@ -1949,6 +2125,10 @@ func fingerprint(tool string, raw json.RawMessage) string {
 }
 
 func printLatest(asJSON bool) error {
+	return printLatestTo(os.Stdout, asJSON)
+}
+
+func printLatestTo(w io.Writer, asJSON bool) error {
 	dir := os.Getenv("ONE_SHOT_STATE_DIR")
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -1987,13 +2167,18 @@ func printLatest(asJSON bool) error {
 	if _, err := decodeState(b, &s); err != nil {
 		return err
 	}
+	normalizeState(&s)
 	life, _ := loadLifetime()
 	if asJSON {
-		return writeJSON(os.Stdout, map[string]any{"state": s, "success": finalPassed(s), "coaching_score": numericScore(s), "report": reportLine(s), "lifetime": life})
+		var coachingScore any
+		if hasRecordedActivity(s) {
+			coachingScore = numericScore(s)
+		}
+		return writeJSON(w, map[string]any{"state": s, "outcome": recordedOutcome(s), "verified": finalPassed(s), "coaching_score": coachingScore, "report": reportLine(s), "lifetime": life})
 	}
-	fmt.Println(reportLine(s))
+	fmt.Fprintln(w, reportLine(s))
 	if life.Runs > 0 {
-		fmt.Printf("Lifetime: Verified goals: %d/%d | Coaching average: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
+		fmt.Fprintf(w, "Lifetime: Verified revisions since 1.12: %d | Historical verified/successful runs: %d/%d | Coaching average: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
 	}
 	return nil
 }
@@ -2006,8 +2191,9 @@ func recordLifetime(s state) error {
 	life.Runs++
 	life.TotalScore += numericScore(s)
 	life.AverageScore = float64(life.TotalScore) / float64(life.Runs)
-	if s.Revision == 0 || (s.VerifiedRevision == s.Revision && s.LastTestPassed) {
+	if finalPassed(s) {
 		life.VerifiedRuns++
+		life.RevisionVerifiedRuns++
 	}
 	life.TotalToolCalls += s.TotalCalls
 	life.TotalTests += completedTests(s)

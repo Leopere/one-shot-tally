@@ -8,7 +8,8 @@ agent works.
 The record helps you study what an agent actually did instead of relying on an
 impression of the run. Use it to find repeated calls, passive waiting,
 unnecessary test reruns, unfinished background work, and missing verification.
-The goal result remains more important than every coaching signal.
+Recorded verification remains more important than every coaching signal. The
+hook does not decide whether the user's goal is complete.
 
 This project is an example policy, not a universal grading standard. Different
 repositories, teams, and agents need different signals. Fork the repository,
@@ -23,7 +24,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 ## What it does
 
 - Records mechanical hook events and local outcome evidence.
-- Distinguishes verified goal completion from advisory coaching signals.
+- Distinguishes verified edited revisions from observed activity and advisory coaching signals.
 - Keeps durable notes for deferred work and long-running background jobs.
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
@@ -33,14 +34,15 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 
 It does not understand product intent, prove service health, or replace human
 review. A high coaching score does not prove that the requested goal succeeded.
-A low coaching score does not turn verified success into failure.
+A low coaching score does not invalidate recorded verification.
 
 ## How to use the record
 
-Start with the goal result. Then review the coaching signals to explain how the
-agent reached that result. Look for patterns across several runs before you
+Start with the recorded outcome. Then review the coaching signals to explain
+the observed work. Look for patterns across several runs before you
 change a rule. Use `status --json` and `grade --json` when you want to compare
-runs with your own scripts.
+runs with your own scripts. Their `outcome` field contains the four-state label,
+and `verified` is true only for `VERIFIED`; there is no ambiguous `success` alias.
 
 Tune one behavior at a time. Update its tests, install the new binary, and watch
 the next runs for both improvement and unintended avoidance. Coaching should
@@ -56,15 +58,21 @@ only to improve a score.
 | 1.11.1 | Spark routing became proactive and session-aware. | Look for safe, independent Spark work, but never invent it or treat usage as a quota. |
 | 1.11.2 | Empty turns stopped counting as successful work. | Require at least one direct recorded attempt to learn or act; prompts, coordination, passive waits, and bookkeeping alone aren't progress. |
 | 1.11.3 | Known wrapped test failures stopped counting as passes. | Inspect structured results and runner failure summaries when a tool wrapper doesn't expose the command's exit code directly. |
+| 1.12.0 | Reports stopped inferring goal success from tool names, shell text, and test output. | Report observed activity honestly; verify only an edited revision with an ordered, explicit passing result. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
 - Correction tone starts polite, becomes firmer after repeated corrections, and resets after a successful edit or passing test.
 - Repeated-call cadence runs on calls 2, 4, 7, 13, and continues onward; a successful edit or passing test resets cadence.
-- `SUCCESS` records test and revision evidence for the current revision. Ship-ready also requires the latest edit to complete successfully.
-- When no edit is required, `SUCCESS` still requires a direct recorded attempt to learn or act. A prompt, coordination call, passive wait, or bookkeeping call alone isn't successful work.
+- `NO OBSERVED WORK` means the hook received no tool calls.
+- `ACTIVITY OBSERVED` means tool activity occurred, but the hook cannot infer completion.
+- `FAILED` means a recorded action, edit, or check has an explicit unresolved failure result.
+- `VERIFIED` requires a completed current edit and an explicit passing standalone test that started after that edit. Ship-ready uses the same evidence.
+- Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification.
+- Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
+- Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
 - `ship-it` is recommended, not required. Deploy contract detection only checks for a tracked `.deploy-it.json`; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
-- Failed delivery is recorded and not auto-retried.
+- Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. Failed or unresolved delivery is recorded and not auto-retried.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
 
 ### How to read a report
@@ -128,12 +136,14 @@ record. `goal resume ID` prints its exact objective and tells the agent to call
 Codex `create_goal`. These commands read Codex's local goal history and never
 write to it.
 
-## Goal result and coaching
+## Recorded outcome and coaching
 
-- Goal result is the only completion metric.
-- `SUCCESS` means the agent made a direct recorded attempt to learn or act and either no edit was required or the current revision passed required verification.
-- `NOT VERIFIED` means the goal still needs work or evidence.
-- The coaching score is advisory. It cannot change `SUCCESS`.
+- The hook records evidence; it does not decide whether the user's goal is complete.
+- `NO OBSERVED WORK` means no tool activity was recorded.
+- `ACTIVITY OBSERVED` means activity occurred without verified revision evidence.
+- `FAILED` means a recorded action or check has an explicit unresolved failure result.
+- `VERIFIED` means the current edited revision completed and a standalone test started afterward, returned an explicit pass, and did not change the Git-visible worktree.
+- The coaching score is advisory. It cannot change the recorded outcome.
 
 The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands. It records successful delivery actions as outcome evidence.
 
