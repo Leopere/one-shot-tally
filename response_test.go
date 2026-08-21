@@ -183,7 +183,7 @@ func TestUnknownTestResultNeverVerifiesEdit(t *testing.T) {
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-test", "hook_event_name": "Stop"})
 	text := string(mustJSON(out))
-	if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(text, "1 unknown") || strings.Contains(text, "ship-ready") {
+	if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(text, "1 unknown") || !strings.Contains(text, "Coaching signals: 100/100 (advisory)") || strings.Contains(text, "ship-ready") {
 		t.Fatalf("unknown test result verified edit: %#v", out)
 	}
 }

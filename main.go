@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.0"
+const binaryVersion = "1.13.1"
 
 const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
 
@@ -890,7 +890,7 @@ func numericScore(s state) int {
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return 0
 	}
-	if s.Revision > 0 && (s.Tests == 0 || s.VerifiedRevision != s.Revision || !s.LastTestPassed) {
+	if s.Revision > 0 && (s.Tests == 0 || s.LastTestResultKnown && (s.VerifiedRevision != s.Revision || !s.LastTestPassed)) {
 		return 25
 	}
 	score := 100

@@ -69,7 +69,7 @@ only to improve a score.
 - `ACTIVITY OBSERVED` means tool activity occurred, but the hook cannot infer completion.
 - `FAILED` means a recorded action, edit, or check has an explicit unresolved failure result.
 - `VERIFIED` requires a completed current edit and an explicit passing standalone test that started after that edit. Ship-ready uses the same evidence.
-- Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification.
+- Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification. Unknown test telemetry never verifies a revision or permits ship-ready status, and by itself no longer forces the coaching score to 25; explicit failures and edits with no test remain penalized.
 - Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
 - Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
 - `ship-it` is the default finalizer for every changed Git work cycle. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
@@ -81,6 +81,7 @@ only to improve a score.
 1. Read outcome first, then coaching score.
 2. In `/goal` mode, tool-call volume is not scored; repetition, passive waits, and redundant tests still are.
 3. Command success is evidence only; it does not prove user-visible acceptance.
+4. Unknown test telemetry no longer drives an automatic score penalty to 25. The outcome remains `ACTIVITY OBSERVED`, and the revision remains unverified and not ship-ready.
 
 ## Install
 
@@ -145,6 +146,7 @@ write to it.
 - `FAILED` means a recorded action or check has an explicit unresolved failure result.
 - `VERIFIED` means the current edited revision completed and a standalone test started afterward, returned an explicit pass, and did not change the Git-visible worktree.
 - The coaching score is advisory. It cannot change the recorded outcome.
+- An unknown test result is treated as missing or inaccessible telemetry: it never verifies a revision, does not permit ship-ready status, and does not force a 25 score by itself; explicit failures and edits with no test remain score-penalized signals.
 
 The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands. It records successful delivery actions as outcome evidence.
 
