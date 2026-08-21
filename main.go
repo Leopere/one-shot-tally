@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.11.1"
+const binaryVersion = "1.11.2"
 
 const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
 
@@ -39,6 +39,10 @@ var (
 	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
 	todoAddRE            = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+add\b`)
 	todoDoneRE           = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+todo\s+done\b`)
+	bookkeepingRE        = regexp.MustCompile(`(?i)(^|[;&|])\s*(env\s+)?([a-z_][a-z0-9_]*=\S+\s+)*(\S*/)?one-shot-tally\s+(status|grade|version|help|goal|background|todo)\b`)
+	shellPrefixRE        = regexp.MustCompile(`(?i)^\s*(env\s+)?([a-z_][a-z0-9_]*=\S+\s+)*`)
+	shellSetupRE         = regexp.MustCompile(`(?i)^\s*(cd\b|export\b|set\b|unset\b|source\b|\.\s+)`)
+	shellNoOpRE          = regexp.MustCompile(`(?i)^\s*(true|:|echo|printf)(\s|$)`)
 )
 
 type event struct {
@@ -77,6 +81,7 @@ type state struct {
 	TurnID                 string                 `json:"turn_id"`
 	UpdatedAt              time.Time              `json:"updated_at"`
 	TotalCalls             int                    `json:"total_calls"`
+	ProgressAttempts       int                    `json:"progress_attempts"`
 	CallCostUnits          int                    `json:"call_cost_units"`
 	SparkCalls             int                    `json:"spark_calls"`
 	Tests                  int                    `json:"tests"`
@@ -404,7 +409,7 @@ func preToolUse(e event, w io.Writer) error {
 		s.GoalScoped = true
 	}
 	command := commandFrom(e.ToolInput)
-	isEdit := e.ToolName == "apply_patch" || e.ToolName == "Edit" || e.ToolName == "Write"
+	isEdit := isEditTool(e.ToolName)
 	isCommand := isCommandTool(e.ToolName)
 	isTest := isCommand && testRE.MatchString(command)
 	isShipping, isDeploying := deliveryInvocations(command)
@@ -418,6 +423,9 @@ func preToolUse(e event, w io.Writer) error {
 	isTodoDone := isCommand && todoDoneRE.MatchString(command)
 
 	s.TotalCalls++
+	if progressAttempt(e, command, isPassiveWait, isBackgroundRecord, isBackgroundComplete, isTodoAdd, isTodoDone, goalChange) {
+		s.ProgressAttempts++
+	}
 	callUnits := 4
 	sparkCall := isSparkCall(e)
 	if sparkCall {
@@ -731,6 +739,9 @@ func reportLine(s state) string {
 }
 
 func numericScore(s state) int {
+	if s.Revision == 0 && s.ProgressAttempts == 0 {
+		return 0
+	}
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return 0
 	}
@@ -796,7 +807,153 @@ func finalPassed(s state) bool {
 	if s.TestFailures > 0 && !s.LastTestPassed {
 		return false
 	}
-	return s.Revision == 0 || (s.Tests > 0 && s.VerifiedRevision == s.Revision && s.LastTestPassed)
+	if s.Revision == 0 {
+		return s.ProgressAttempts > 0
+	}
+	return s.Tests > 0 && s.VerifiedRevision == s.Revision && s.LastTestPassed
+}
+
+func progressAttempt(e event, command string, passive, backgroundRecord, backgroundComplete, todoAdd, todoDone bool, goalChange string) bool {
+	if backgroundRecord || backgroundComplete || todoAdd || todoDone || goalChange != "" {
+		return false
+	}
+	tool := strings.ToLower(strings.TrimSpace(e.ToolName))
+	if tool == "" {
+		return false
+	}
+	compact := strings.NewReplacer("_", "", "-", "", ".", "").Replace(tool)
+	for _, bookkeeping := range []string{"listagents", "sendmessage", "updateplan", "getgoal", "waitagent"} {
+		if strings.Contains(compact, bookkeeping) {
+			return false
+		}
+	}
+	if isCommandTool(tool) {
+		return commandProgress(command)
+	}
+	if passive {
+		return false
+	}
+	if isEditTool(tool) {
+		return true
+	}
+	for _, directWork := range []string{"web", "search", "open", "click", "screenshot", "viewimage", "imagegen", "requestuserinput"} {
+		if strings.Contains(compact, directWork) {
+			return true
+		}
+	}
+	return false
+}
+
+func commandProgress(command string) bool {
+	for _, segment := range splitShellSegments(command) {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || bookkeepingRE.MatchString(segment) {
+			continue
+		}
+		bare := shellPrefixRE.ReplaceAllString(segment, "")
+		if bare == "" || passiveWaitRE.MatchString(bare) || shellSetupRE.MatchString(bare) || shellNoOpRE.MatchString(bare) && !hasUnquotedRune(bare, "<>") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func commandHasPassiveWait(command string) bool {
+	for _, segment := range splitShellSegments(command) {
+		bare := shellPrefixRE.ReplaceAllString(strings.TrimSpace(segment), "")
+		if passiveWaitRE.MatchString(bare) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitShellSegments(command string) []string {
+	var segments []string
+	start := 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		if char == '#' && (i == 0 || shellCommentBoundary(command[i-1])) {
+			segments = append(segments, command[start:i])
+			for i < len(command) && command[i] != '\n' {
+				i++
+			}
+			if i >= len(command) {
+				return segments
+			}
+			start = i + 1
+			continue
+		}
+		if char == ';' || char == '&' || char == '|' || char == '\n' {
+			segments = append(segments, command[start:i])
+			start = i + 1
+		}
+	}
+	return append(segments, command[start:])
+}
+
+func shellCommentBoundary(char byte) bool {
+	return char == ' ' || char == '\t' || char == '\r' || char == '\n' || char == ';' || char == '&' || char == '|'
+}
+
+func hasUnquotedRune(text, wanted string) bool {
+	segments := splitShellSegments(text)
+	if len(segments) != 1 {
+		return true
+	}
+	var quote byte
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		char := text[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		if strings.ContainsRune(wanted, rune(char)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEditTool(tool string) bool {
+	compact := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(tool)))
+	return strings.HasSuffix(compact, "applypatch") || strings.HasSuffix(compact, "edit") || strings.HasSuffix(compact, "write")
 }
 
 func passiveWait(e event, command string) bool {
@@ -814,7 +971,7 @@ func passiveWait(e event, command string) bool {
 			return !present || strings.TrimSpace(fmt.Sprint(chars)) == ""
 		}
 	}
-	return passiveWaitRE.MatchString(command)
+	return commandHasPassiveWait(command)
 }
 
 func responsePassed(raw json.RawMessage) bool {
@@ -952,6 +1109,9 @@ func loadState(path string, sessionID, turnID string) (state, error) {
 		}
 		s.StateVersion = 2
 	}
+	if s.StateVersion < 3 {
+		s.StateVersion = 3
+	}
 	if s.CallCostUnits == 0 && s.TotalCalls > 0 {
 		s.CallCostUnits = s.TotalCalls * 4
 	}
@@ -959,7 +1119,7 @@ func loadState(path string, sessionID, turnID string) (state, error) {
 }
 
 func emptyState(sessionID, turnID string) state {
-	return state{SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
+	return state{StateVersion: 3, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
 }
 
 func decodeState(b []byte, s *state) (bool, error) {

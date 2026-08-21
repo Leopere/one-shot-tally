@@ -205,7 +205,7 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 }
 
 func TestGoalModeDoesNotScoreToolVolume(t *testing.T) {
-	normal := state{TotalCalls: 100, CallCostUnits: 400, PassiveWaits: 1}
+	normal := state{TotalCalls: 100, ProgressAttempts: 99, CallCostUnits: 400, PassiveWaits: 1}
 	goal := normal
 	goal.GoalScoped = true
 	if got := numericScore(normal); got != 78 {
@@ -269,6 +269,191 @@ func TestUnverifiedStopAdvisesWithoutBlockingOrLifetimeRecord(t *testing.T) {
 	life, err := loadLifetime()
 	if err != nil || life.Runs != 1 || life.VerifiedRuns != 1 {
 		t.Fatalf("continued success was not recorded: %#v err=%v", life, err)
+	}
+}
+
+func TestStopWithoutProgressAttemptsDoesNotReportSuccessOrRecordVerifiedLifetime(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	beforeLife, beforeErr := loadLifetime()
+	if beforeErr != nil && !errors.Is(beforeErr, os.ErrNotExist) {
+		t.Fatalf("unexpected pre-life state: %v", beforeErr)
+	}
+
+	out := hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "no-progress",
+		"hook_event_name": "Stop", "last_assistant_message": "Nothing was done",
+	})
+	if strings.Contains(string(mustJSON(out)), "Goal result: SUCCESS") {
+		t.Fatalf("empty stop was marked success: %#v", out)
+	}
+
+	afterLife, err := loadLifetime()
+	if beforeErr == nil {
+		if err != nil {
+			t.Fatalf("lifetime disappeared after stop: %v", err)
+		}
+		if afterLife.VerifiedRuns != beforeLife.VerifiedRuns || afterLife.Runs != beforeLife.Runs {
+			t.Fatalf("verified lifetime advanced without progress: before=%#v after=%#v", beforeLife, afterLife)
+		}
+		return
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lifetime was created on empty stop: %#v", afterLife)
+	}
+}
+
+func TestReadOnlyStatusCountsAsProgressAttempt(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "read-only", "hook_event_name": "PreToolUse",
+		"tool_name": "Bash", "tool_use_id": "inspect", "tool_input": map[string]any{"command": "git status --short"},
+	})
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("state files: %v, %v", files, err)
+	}
+	b, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s state
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.ProgressAttempts != 1 {
+		t.Fatalf("read-only command not counted as progress attempt: %#v", s)
+	}
+	out := hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "read-only", "hook_event_name": "Stop",
+		"last_assistant_message": "Reviewed repo state",
+	})
+	if !strings.Contains(string(mustJSON(out)), "Goal result: SUCCESS") {
+		t.Fatalf("read-only progress was not considered for stop success: %#v", out)
+	}
+}
+
+func TestPassiveWaitOnlyDoesNotReportSuccess(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "passive", "hook_event_name": "PreToolUse",
+		"tool_name": "Bash", "tool_use_id": "wait", "tool_input": map[string]any{"command": "sleep 10"},
+	})
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("state files: %v, %v", files, err)
+	}
+	b, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s state
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.ProgressAttempts != 0 || s.PassiveWaits != 1 {
+		t.Fatalf("passive wait should not count as progress: %#v", s)
+	}
+	out := hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "passive", "hook_event_name": "Stop",
+		"last_assistant_message": "Still waiting",
+	})
+	if strings.Contains(string(mustJSON(out)), "Goal result: SUCCESS") {
+		t.Fatalf("passive wait-only stop was marked success: %#v", out)
+	}
+}
+
+func TestBookkeepingOnlyDoesNotReportSuccess(t *testing.T) {
+	dir := t.TempDir()
+	for i, command := range []string{"one-shot-tally status", "env ONE_SHOT_STATE_DIR=/tmp/example one-shot-tally status"} {
+		hook(t, dir, map[string]any{
+			"session_id": "s", "turn_id": "bookkeeping", "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("status-%d", i), "tool_input": map[string]any{"command": command},
+		})
+	}
+	hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "bookkeeping", "hook_event_name": "PreToolUse",
+		"tool_name": "collaborationspawn_agent", "tool_use_id": "delegate", "tool_input": map[string]any{"message": "Review it"},
+	})
+	out := hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "bookkeeping", "hook_event_name": "Stop",
+		"last_assistant_message": "Read the coach score",
+	})
+	if strings.Contains(string(mustJSON(out)), "Goal result: SUCCESS") {
+		t.Fatalf("bookkeeping-only stop was marked success: %#v", out)
+	}
+}
+
+func TestCommandChainsRequireARealProgressSegment(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		success bool
+	}{
+		{name: "setup and wait", command: "cd . && sleep 1"},
+		{name: "true no-op", command: "true"},
+		{name: "echo no-op", command: "echo done"},
+		{name: "quoted command text", command: "echo 'please inspect; git status --short'"},
+		{name: "quoted redirect text", command: "echo 'not > a file'"},
+		{name: "commented command text", command: "echo prompt # ; git status --short"},
+		{name: "wait then inspect", command: "sleep 0; git status --short", success: true},
+		{name: "bookkeeping then inspect", command: "one-shot-tally status; git status --short", success: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			hook(t, dir, map[string]any{
+				"session_id": "s", "turn_id": test.name, "hook_event_name": "PreToolUse",
+				"tool_name": "Bash", "tool_use_id": "command", "tool_input": map[string]any{"command": test.command},
+			})
+			out := hook(t, dir, map[string]any{
+				"session_id": "s", "turn_id": test.name, "hook_event_name": "Stop",
+				"last_assistant_message": "Done",
+			})
+			got := strings.Contains(string(mustJSON(out)), "Goal result: SUCCESS")
+			if got != test.success {
+				t.Fatalf("success = %v, want %v: %#v", got, test.success, out)
+			}
+		})
+	}
+}
+
+func TestNamespacedEditRequiresVerification(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "namespaced-edit", "hook_event_name": "PreToolUse",
+		"tool_name": "functions.apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"},
+	})
+	hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "namespaced-edit", "hook_event_name": "PostToolUse",
+		"tool_name": "functions.apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0},
+	})
+	out := hook(t, dir, map[string]any{
+		"session_id": "s", "turn_id": "namespaced-edit", "hook_event_name": "Stop",
+		"last_assistant_message": "Edited without testing",
+	})
+	if strings.Contains(string(mustJSON(out)), "Goal result: SUCCESS") {
+		t.Fatalf("unverified namespaced edit was marked success: %#v", out)
+	}
+}
+
+func TestLegacyStateDoesNotInferProgress(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.json")
+	legacy := state{StateVersion: 2, SessionID: "s", TurnID: "legacy", TotalCalls: 5, CallCostUnits: 20}
+	b, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadState(path, "s", "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.StateVersion != 3 || loaded.ProgressAttempts != 0 || finalPassed(loaded) {
+		t.Fatalf("legacy state inferred progress: %#v", loaded)
 	}
 }
 
@@ -362,6 +547,9 @@ func TestSparkCallsAreDiscounted(t *testing.T) {
 	if s.TotalCalls != 37 || s.SparkCalls != 8 || s.CallCostUnits != 124 {
 		t.Fatalf("unexpected Spark accounting: %#v", s)
 	}
+	// This fixture uses only spawn and no-op calls to isolate cost accounting.
+	// Supply progress explicitly for the separate score calculation below.
+	s.ProgressAttempts = 1
 	if got := numericScore(s); got != 99 {
 		t.Fatalf("discounted score = %d, want 99", got)
 	}
@@ -386,7 +574,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.11.1", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.11.2", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -573,7 +761,7 @@ func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
 	b, _ := os.ReadFile(files[0])
 	var s state
 	_ = json.Unmarshal(b, &s)
-	if s.BackgroundRecords != 1 || s.PassiveWaits != 1 || numericScore(s) != 98 {
+	if s.BackgroundRecords != 1 || s.PassiveWaits != 1 || s.ProgressAttempts != 0 || numericScore(s) != 0 {
 		t.Fatalf("stewardship accounting = %#v score=%d", s, numericScore(s))
 	}
 	if report := reportLine(s); !strings.Contains(report, "1 recorded, 0 completed; passive waits: 1") {

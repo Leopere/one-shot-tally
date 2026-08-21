@@ -54,12 +54,14 @@ only to improve a score.
 | 1.10.4–1.10.8 | Scope correction became less destructive while generic per-prompt guidance was tested and then reconsidered. | Preserve compatible work and revise only the conflict. |
 | 1.11.0 | Ordinary prompts became quiet; repeated-call reminders gained graduated/reset cadence; correction tone became session-stateful; and ship/deploy outcomes became separate. | Emit event-specific guidance, widen reminder intervals, reset after proven progress, and require current evidence before recommending delivery. |
 | 1.11.1 | Spark routing became proactive and session-aware. | Look for safe, independent Spark work, but never invent it or treat usage as a quota. |
+| 1.11.2 | Empty turns stopped counting as successful work. | Require at least one direct recorded attempt to learn or act; prompts, coordination, passive waits, and bookkeeping alone aren't progress. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
 - Correction tone starts polite, becomes firmer after repeated corrections, and resets after a successful edit or passing test.
 - Repeated-call cadence runs on calls 2, 4, 7, 13, and continues onward; a successful edit or passing test resets cadence.
 - `SUCCESS` records test and revision evidence for the current revision. Ship-ready also requires the latest edit to complete successfully.
+- When no edit is required, `SUCCESS` still requires a direct recorded attempt to learn or act. A prompt, coordination call, passive wait, or bookkeeping call alone isn't successful work.
 - `ship-it` is recommended, not required. Deploy contract detection only checks for a tracked `.deploy-it.json`; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
 - Failed delivery is recorded and not auto-retried.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
@@ -128,7 +130,7 @@ write to it.
 ## Goal result and coaching
 
 - Goal result is the only completion metric.
-- `SUCCESS` means no edit was required or the current revision passed required verification.
+- `SUCCESS` means the agent made a direct recorded attempt to learn or act and either no edit was required or the current revision passed required verification.
 - `NOT VERIFIED` means the goal still needs work or evidence.
 - The coaching score is advisory. It cannot change `SUCCESS`.
 

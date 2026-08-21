@@ -36,6 +36,7 @@ one-shot-tally help|-h|--help
 - Keep non-code agent messages terse and preserve exact technical terms.
 - Never assign the same task to both the primary agent and a subagent.
 - Treat coaching as advisory; never trade correctness or delivery for a score.
+- Do not count a prompt by itself as successful work. When no edit is required, success still needs at least one direct recorded attempt to learn or act; coordination calls, passive waits, and bookkeeping alone do not qualify.
 - Keep ordinary prompts quiet. Emit prompt guidance only when a correction is detected.
 - Start correction steers politely. Increase directness only after repeated corrections, and reset after a successful edit or passing check.
 - Space repeated-call steers farther apart as they recur. Reset after a successful edit or passing check; do not repeat guidance on every call.
