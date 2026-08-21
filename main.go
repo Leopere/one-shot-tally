@@ -17,13 +17,15 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.12.0"
+const binaryVersion = "1.13.0"
 
 const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
 
 const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent edit with a disjoint target for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive or billable work, sequential work, or overlapping ownership."
 
 const communicationGuidance = "Keep non-code agent messages terse and preserve exact technical terms."
+
+const deliveryGuidance = "Use ship-it by default to finalize every changed Git work cycle. If production is requested and no tracked deploy-it contract exists, do not stop at the push: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present that procedure to the user. Only the user may accept deployment trust or authorize that procedure. After explicit acceptance, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; never invent trust or self-authorize."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -285,7 +287,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
+		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + deliveryGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -844,12 +846,12 @@ func closingLoop(s state, deployContract bool) string {
 		if deployContract {
 			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result; do not create deployment trust without exact authorization."
 		}
-		return " Closing loop: shipping completed. No tracked .deploy-it.json is present, so deployment is intentionally skipped."
+		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure to the user. Only the user may accept deployment trust or authorize the procedure. After explicit acceptance, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
 	}
 	if deployContract {
 		return " Closing loop: verified changes are ship-ready. Run ship-it; it will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Confirm the user-visible acceptance result."
 	}
-	return " Closing loop: verified changes are ship-ready. Run ship-it. No tracked .deploy-it.json means deployment is intentionally skipped."
+	return " Closing loop: verified changes are ship-ready. Run ship-it by default. If production was requested and no tracked .deploy-it.json exists after shipping, self-resolve everything except authorization: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it to the user. Only the user may accept deployment trust or authorize the procedure; after explicit acceptance, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
 }
 
 func outcomeAdvisory(outcome string) string {

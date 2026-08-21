@@ -606,7 +606,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.12.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.13.0", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -846,12 +846,12 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "ship-it by default", "do not stop at the push", "Only the user may accept deployment trust", "continue through ship-it/deploy-it", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 1000 {
+	if len(text) > 1500 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
 	}
 }
@@ -1033,7 +1033,7 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 			if withContract && (!strings.Contains(message, "deploy-it contract") || !strings.Contains(message, "already trusted")) {
 				t.Fatalf("contract handoff guidance = %#v", ready)
 			}
-			if !withContract && !strings.Contains(message, "deployment is intentionally skipped") {
+			if !withContract && (!strings.Contains(message, "Run ship-it by default") || !strings.Contains(message, "Only the user may accept deployment trust")) {
 				t.Fatalf("absent-contract guidance = %#v", ready)
 			}
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
@@ -1043,7 +1043,7 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 			if withContract && (!strings.Contains(doneMessage, "shipping completed") || !strings.Contains(doneMessage, "Confirm the ship-it deploy-it handoff")) {
 				t.Fatalf("successful shipping did not preserve deploy proof boundary: %#v", done)
 			}
-			if !withContract && !strings.Contains(doneMessage, "shipping completed") {
+			if !withContract && (!strings.Contains(doneMessage, "shipping completed") || !strings.Contains(doneMessage, "production was not deployed") || !strings.Contains(doneMessage, "do not stop at the push") || !strings.Contains(doneMessage, "Only the user may accept deployment trust")) {
 				t.Fatalf("successful shipping not recorded: %#v", done)
 			}
 		})

@@ -59,6 +59,7 @@ only to improve a score.
 | 1.11.2 | Empty turns stopped counting as successful work. | Require at least one direct recorded attempt to learn or act; prompts, coordination, passive waits, and bookkeeping alone aren't progress. |
 | 1.11.3 | Known wrapped test failures stopped counting as passes. | Inspect structured results and runner failure summaries when a tool wrapper doesn't expose the command's exit code directly. |
 | 1.12.0 | Reports stopped inferring goal success from tool names, shell text, and test output. | Report observed activity honestly; verify only an edited revision with an ordered, explicit passing result. |
+| 1.13.0 | A successful Git push could end a production-requested task when no deployment contract existed. | Run `ship-it` by default; resolve a missing deployment procedure from evidence and require the user's explicit acceptance before trust or deployment. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -71,7 +72,7 @@ only to improve a score.
 - Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification.
 - Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
 - Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
-- `ship-it` is recommended, not required. Deploy contract detection only checks for a tracked `.deploy-it.json`; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
+- `ship-it` is the default finalizer for every changed Git work cycle. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
 - Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. Failed or unresolved delivery is recorded and not auto-retried.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
 
@@ -162,13 +163,15 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
 - A successful delivery action earns one capped outcome credit.
 - Command success does not prove service health.
+- A successful `git push`/`ship-it` with deployment skipped is not production completion when production deployment was requested.
 - Deployability is detected by presence of a tracked `.deploy-it.json`; trust and handoff enforcement are performed by `ship-it`/`deploy-it`.
+- If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this to the user and only proceeds after explicit user authorization. The agent must not invent trust or self-authorize.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Repeated-call reminders use widening intervals. Successful edits and passing checks reset their cadence.
 - Before main-thread implementation starts, actively look for an exact low-risk independent edit for a spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread.
 - One session-scoped Spark close review appears only after at least two successful edits without any Spark calls.
-- A verified edited revision is ship-ready. Run `ship-it`; it invokes `deploy-it` only for an already trusted, tracked `.deploy-it.json` contract.
-- Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent a deployment command or create trust without exact authorization.
+- A verified edited revision is ship-ready. If the user has explicitly accepted the target/procedure above, implement the tracked contract or procedure, continue through `ship-it` and `deploy-it`, then verify the visible acceptance result.
+- Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent trust, create a deployment command, or self-authorize.
 - Park useful work that is outside the requested goal. Return to it later.
 - Never duplicate ownership between primary and Spark; primary retains architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, integration, and final acceptance.
 - After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.
