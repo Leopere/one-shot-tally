@@ -43,7 +43,7 @@ one-shot-tally help|-h|--help
 - Start correction steers politely. Increase directness only after repeated corrections, and reset after a successful edit or passing check.
 - Space repeated-call steers farther apart as they recur. Reset after a successful edit or passing check; do not repeat guidance on every call.
 - After a verified run with at least two successful edits and no session Spark use, emit one review that asks whether safe Spark work existed. Never invent work to satisfy the review.
-- At closing, recommend `ship-it` only after the latest edit succeeds and the current revision is verified. Record outcomes; do not execute delivery from the hook.
+- After the latest edit succeeds and the current revision is verified, run `ship-it` directly. Do not merely recommend it or ask for separate commit, push, or shipping permission. The hook process emits guidance and records outcomes; it does not spawn delivery commands itself.
 - Detect a tracked `.deploy-it.json`, but leave contract validation, trust, and handoff to `ship-it` and `deploy-it`. Never retry failed delivery automatically.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.
 - Never block Git, `ship-it`, or `deploy-it`.

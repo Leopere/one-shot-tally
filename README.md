@@ -29,7 +29,8 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
-- Recommends `ship-it` after verified work, records delivery outcomes, and does not execute delivery.
+- Directs the primary agent to run `ship-it` after verified work. The hook process emits guidance and records delivery outcomes; it does not spawn delivery commands itself.
+- Makes `status` prefer the latest session with recorded work over a newer empty turn.
 - Exposes human-readable and JSON reports for later comparison.
 
 It does not understand product intent, prove service health, or replace human
@@ -62,6 +63,7 @@ only to improve a score.
 | 1.13.0 | A successful Git push could end a production-requested task when no deployment contract existed. | Run `ship-it` by default; resolve a missing deployment procedure from evidence and require the user's explicit acceptance before trust or deployment. |
 | 1.13.1 | Unknown test telemetry forced the same 25 score as an edit with no test. | Keep the revision unverified and not ship-ready, but do not punish an agent for telemetry availability it cannot control. |
 | 1.13.2 | Agents repeatedly requested a magic approval phrase after the user had already authorized a presented production procedure. | Treat clear instructions to deploy, proceed, continue, or keep going until the visible result as explicit acceptance, then execute without asking again. |
+| 1.13.3 | Agents treated `ship-it` as a recommendation, and a newer empty turn could hide the latest working session in `status`. | Run `ship-it` directly after bounded verification without separate shipping permission, and report the latest session with recorded work. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -74,7 +76,7 @@ only to improve a score.
 - Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification. Unknown test telemetry never verifies a revision or permits ship-ready status, and by itself no longer forces the coaching score to 25; explicit failures and edits with no test remain penalized.
 - Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
 - Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
-- `ship-it` is the default finalizer for every changed Git work cycle. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
+- `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it directly without merely recommending it or asking for separate commit, push, or shipping permission. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
 - Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. Failed or unresolved delivery is recorded and not auto-retried.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
 

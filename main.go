@@ -17,17 +17,17 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.2"
+const binaryVersion = "1.13.3"
 
-const subagentGuidance = "The main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence, workers or implementors for scoped changes, and reviewers for checks."
+const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
-const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent edit with a disjoint target for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive or billable work, sequential work, or overlapping ownership."
+const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent edit with a disjoint target for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive/billable, sequential work, or overlapping ownership."
 
-const communicationGuidance = "Keep non-code agent messages terse and preserve exact technical terms."
+const communicationGuidance = "Keep non-code agent messages terse; preserve exact technical terms."
 
 const acceptanceGuidance = "Only the user may accept deployment trust or authorize it. Acceptance is intent, not a magic phrase: after the procedure is presented, deploy, proceed, continue, or keep going until the visible result counts as explicit acceptance. Once accepted, do not ask again."
 
-const deliveryGuidance = "Use ship-it by default. If production lacks a tracked deploy-it contract, do not stop at the push: identify the target, revision, and visible acceptance procedure; present it once. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify the result; never invent trust or self-authorize."
+const deliveryGuidance = "After the latest edit succeeds and the current revision is verified, run ship-it directly. Do not merely recommend it or ask for separate shipping permission. If production lacks a tracked deploy-it contract, do not stop at the push: identify and present the target, revision, and visible acceptance procedure once. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify the result; never invent trust or self-authorize."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -289,7 +289,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome and verify edits. The tally score is advisory. Stay in the current repository unless the user names another target. Before external changes, confirm the target and visible acceptance result. " + deliveryGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
+		context := "Finish the latest requested outcome; verify edits. Tally score is advisory. Stay in the current repository unless user names another target. Before external changes, confirm target and visible acceptance result. " + deliveryGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -615,7 +615,7 @@ func nextAction(s state) string {
 	case s.Revision == 0:
 		return "use the evidence already gathered to take the smallest step that advances the requested goal; edit only when evidence supports a change, otherwise answer or request the missing direction"
 	case s.VerifiedRevision == s.Revision && s.LastTestPassed:
-		return "the current goal is verified; report success and stop unless a stated requirement remains unmet"
+		return "the current revision is verified; run ship-it now, then report success unless a stated requirement remains unmet"
 	default:
 		return "finish the smallest current goal step, review it once, and run the narrow check plus required final contract"
 	}
@@ -851,9 +851,9 @@ func closingLoop(s state, deployContract bool) string {
 		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
 	}
 	if deployContract {
-		return " Closing loop: verified changes are ship-ready. Run ship-it; it will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Confirm the user-visible acceptance result."
+		return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it or ask for separate shipping permission. It will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Confirm the user-visible acceptance result."
 	}
-	return " Closing loop: verified changes are ship-ready. Run ship-it by default. If production was requested and no tracked .deploy-it.json exists after shipping, self-resolve everything except authorization: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
+	return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it or ask for separate shipping permission. If production was requested and no tracked .deploy-it.json exists after shipping, self-resolve everything except authorization: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
 }
 
 func outcomeAdvisory(outcome string) string {
@@ -2145,33 +2145,31 @@ func printLatestTo(w io.Writer, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	type candidate struct {
-		path string
-		mod  time.Time
-	}
-	var files []candidate
+	var states []state
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == "lifetime.json" || entry.Name() == "background-jobs.json" || entry.Name() == "todos.json" {
 			continue
 		}
-		info, err := entry.Info()
-		if err == nil {
-			files = append(files, candidate{filepath.Join(dir, entry.Name()), info.ModTime()})
+		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
 		}
+		var candidate state
+		if _, err := decodeState(b, &candidate); err != nil {
+			continue
+		}
+		normalizeState(&candidate)
+		if candidate.UpdatedAt.IsZero() {
+			if info, err := entry.Info(); err == nil {
+				candidate.UpdatedAt = info.ModTime()
+			}
+		}
+		states = append(states, candidate)
 	}
-	if len(files) == 0 {
+	if len(states) == 0 {
 		return errors.New("no tally state found")
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
-	b, err := os.ReadFile(files[0].path)
-	if err != nil {
-		return err
-	}
-	var s state
-	if _, err := decodeState(b, &s); err != nil {
-		return err
-	}
-	normalizeState(&s)
+	s := selectStatusState(states)
 	life, _ := loadLifetime()
 	if asJSON {
 		var coachingScore any
@@ -2185,6 +2183,60 @@ func printLatestTo(w io.Writer, asJSON bool) error {
 		fmt.Fprintf(w, "Lifetime: Verified revisions since 1.12: %d | Historical verified/successful runs: %d/%d | Coaching average: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
 	}
 	return nil
+}
+
+func selectStatusState(states []state) state {
+	if len(states) == 0 {
+		return state{}
+	}
+	type sessionPick struct {
+		latest     state
+		latestWork state
+		hasWork    bool
+	}
+	bySession := map[string]*sessionPick{}
+	order := make([]string, 0, len(states))
+	for _, candidate := range states {
+		key := candidate.SessionID
+		if key == "" {
+			key = candidate.TurnID
+		}
+		pick, ok := bySession[key]
+		if !ok {
+			pick = &sessionPick{latest: candidate}
+			bySession[key] = pick
+			order = append(order, key)
+		}
+		if candidate.UpdatedAt.After(pick.latest.UpdatedAt) {
+			pick.latest = candidate
+		}
+		if hasRecordedActivity(candidate) && (!pick.hasWork || candidate.UpdatedAt.After(pick.latestWork.UpdatedAt)) {
+			pick.latestWork = candidate
+			pick.hasWork = true
+		}
+	}
+	var best *sessionPick
+	for _, key := range order {
+		pick := bySession[key]
+		if best == nil || (pick.hasWork && !best.hasWork) {
+			best = pick
+			continue
+		}
+		if pick.hasWork != best.hasWork {
+			continue
+		}
+		candidateTime, bestTime := pick.latest.UpdatedAt, best.latest.UpdatedAt
+		if pick.hasWork {
+			candidateTime, bestTime = pick.latestWork.UpdatedAt, best.latestWork.UpdatedAt
+		}
+		if candidateTime.After(bestTime) {
+			best = pick
+		}
+	}
+	if best.hasWork {
+		return best.latestWork
+	}
+	return best.latest
 }
 
 func recordLifetime(s state) error {

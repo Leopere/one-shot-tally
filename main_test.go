@@ -486,6 +486,43 @@ func TestStatusMigratesLegacyStateAndOmitsSuccessAlias(t *testing.T) {
 	}
 }
 
+func TestStatusPrefersLatestWorkingSessionOverNewerEmptyTurn(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	working := state{StateVersion: 4, SessionID: "working", TurnID: "worked", TotalCalls: 1, UpdatedAt: time.Now().Add(-time.Minute)}
+	empty := state{StateVersion: 4, SessionID: "empty", TurnID: "new-question", UpdatedAt: time.Now()}
+	for name, candidate := range map[string]state{"working.json": working, "empty.json": empty} {
+		b, err := json.Marshal(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	if err := printLatestTo(&output, true); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		State state `json:"state"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.State.SessionID != "working" || report.State.TurnID != "worked" {
+		t.Fatalf("status selected empty turn: %#v", report.State)
+	}
+}
+
+func TestVerifiedNextActionRunsShipItBeforeReportingSuccess(t *testing.T) {
+	verified := state{Revision: 2, VerifiedRevision: 2, LastTestPassed: true, LastTestResultKnown: true}
+	message := nextAction(verified)
+	if !strings.Contains(message, "run ship-it now") || !strings.Contains(message, "then report success") {
+		t.Fatalf("verified next action does not ship directly: %q", message)
+	}
+}
+
 func TestRequiredTestingOutweighsEfficiency(t *testing.T) {
 	unverified := state{Revision: 1}
 	if finalPassed(unverified) || numericScore(unverified) != 25 {
@@ -606,7 +643,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.13.2", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.13.3", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -846,12 +883,12 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "ship-it by default", "do not stop at the push", "Only the user may accept deployment trust", "intent, not a magic phrase", "keep going until the visible result", "Once accepted, do not ask again", "Continue through ship-it/deploy-it", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "run ship-it directly", "Do not merely recommend it", "separate shipping permission", "do not stop at the push", "Only the user may accept deployment trust", "intent, not a magic phrase", "keep going until the visible result", "Once accepted, do not ask again", "Continue through ship-it/deploy-it", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 1500 {
+	if len(text) > 1600 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
 	}
 }
@@ -1027,13 +1064,13 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 			ready := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "Stop"})
 			message := ready["systemMessage"].(string)
-			if !strings.Contains(message, "ship-ready") || !strings.Contains(message, "Run ship-it") {
+			if !strings.Contains(message, "ship-ready") || !strings.Contains(message, "Run ship-it now") || !strings.Contains(message, "do not merely recommend it") || !strings.Contains(message, "separate shipping permission") {
 				t.Fatalf("verified stop did not close shipping loop: %#v", ready)
 			}
 			if withContract && (!strings.Contains(message, "deploy-it contract") || !strings.Contains(message, "already trusted")) {
 				t.Fatalf("contract handoff guidance = %#v", ready)
 			}
-			if !withContract && (!strings.Contains(message, "Run ship-it by default") || !strings.Contains(message, "Only the user may accept deployment trust") || !strings.Contains(message, "Once accepted, do not ask again")) {
+			if !withContract && (!strings.Contains(message, "Run ship-it now") || !strings.Contains(message, "Only the user may accept deployment trust") || !strings.Contains(message, "Once accepted, do not ask again")) {
 				t.Fatalf("absent-contract guidance = %#v", ready)
 			}
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
@@ -1047,6 +1084,28 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 				t.Fatalf("successful shipping not recorded: %#v", done)
 			}
 		})
+	}
+}
+
+func TestHookNeverSpawnsDeliveryCommands(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "delivery-spawned")
+	for _, name := range []string{"ship-it", "deploy-it"} {
+		script := filepath.Join(dir, name)
+		body := "#!/bin/sh\nprintf spawned > \"" + marker + "\"\n"
+		if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	common := map[string]any{"session_id": "s", "turn_id": "no-spawn"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hook spawned a delivery command: %v", err)
 	}
 }
 
