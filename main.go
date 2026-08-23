@@ -17,17 +17,19 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.3"
+const binaryVersion = "1.13.4"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
-const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent edit with a disjoint target for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive/billable, sequential work, or overlapping ownership."
+const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent, disjoint edit for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive/billable, sequential work, or overlapping ownership."
 
 const communicationGuidance = "Keep non-code agent messages terse; preserve exact technical terms."
 
-const acceptanceGuidance = "Only the user may accept deployment trust or authorize it. Acceptance is intent, not a magic phrase: after the procedure is presented, deploy, proceed, continue, or keep going until the visible result counts as explicit acceptance. Once accepted, do not ask again."
+const targetGuidance = "Before external changes, state target and visible result: evidence, not permission. If clear, continue without waiting."
 
-const deliveryGuidance = "After the latest edit succeeds and the current revision is verified, run ship-it directly. Do not merely recommend it or ask for separate shipping permission. If production lacks a tracked deploy-it contract, do not stop at the push: identify and present the target, revision, and visible acceptance procedure once. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify the result; never invent trust or self-authorize."
+const acceptanceGuidance = "A standing user instruction to ship completed changes to production authorizes matching revisions through an already-trusted tracked contract until revoked. Do not ask per-revision. Only the user may authorize a new target or deployment trust. Otherwise present the procedure once; after acceptance, do not ask again."
+
+const deliveryGuidance = "After the latest edit succeeds and is verified, run ship-it immediately. Do not recommend it, ask separate shipping permission, or wait. With no production deploy-it contract, state target, revision, and visible acceptance procedure once; do not stop at the push. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify; never invent trust."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -289,7 +291,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome; verify edits. Tally score is advisory. Stay in the current repository unless user names another target. Before external changes, confirm target and visible acceptance result. " + deliveryGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
+		context := "Finish the latest requested outcome; verify edits. Tally score is advisory. Stay in the current repository unless user names another target. " + targetGuidance + " " + deliveryGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -846,14 +848,14 @@ func closingLoop(s state, deployContract bool) string {
 	}
 	if s.ShipCompletions > 0 {
 		if deployContract {
-			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result; do not create deployment trust without exact authorization."
+			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result. Apply matching standing production authorization without asking for per-revision permission; do not create new deployment trust without exact user authorization."
 		}
-		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
+		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure once. " + acceptanceGuidance + " Apply matching standing authorization, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
 	}
 	if deployContract {
-		return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it or ask for separate shipping permission. It will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Confirm the user-visible acceptance result."
+		return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it, ask for separate shipping permission, or pause for acknowledgement. It will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Apply matching standing production authorization without asking again, then confirm the user-visible acceptance result."
 	}
-	return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it or ask for separate shipping permission. If production was requested and no tracked .deploy-it.json exists after shipping, self-resolve everything except authorization: determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it once. " + acceptanceGuidance + " Implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
+	return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it, ask for separate shipping permission, or pause for acknowledgement. If production was requested and no tracked .deploy-it.json exists after shipping, determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it once. " + acceptanceGuidance + " Apply matching standing authorization, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
 }
 
 func outcomeAdvisory(outcome string) string {

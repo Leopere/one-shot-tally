@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "after_ship": true,
+  "environment": "production",
+  "command": ["./install.sh"],
+  "env": ["HOME"],
+  "timeout_seconds": 120
+}

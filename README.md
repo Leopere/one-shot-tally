@@ -29,7 +29,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
-- Directs the primary agent to run `ship-it` after verified work. The hook process emits guidance and records delivery outcomes; it does not spawn delivery commands itself.
+- Directs the primary agent to run `ship-it` immediately after verified work and to apply matching standing production authorization without asking again. The hook process emits guidance and records delivery outcomes; it does not spawn delivery commands itself.
 - Makes `status` prefer the latest session with recorded work over a newer empty turn.
 - Exposes human-readable and JSON reports for later comparison.
 
@@ -64,6 +64,7 @@ only to improve a score.
 | 1.13.1 | Unknown test telemetry forced the same 25 score as an edit with no test. | Keep the revision unverified and not ship-ready, but do not punish an agent for telemetry availability it cannot control. |
 | 1.13.2 | Agents repeatedly requested a magic approval phrase after the user had already authorized a presented production procedure. | Treat clear instructions to deploy, proceed, continue, or keep going until the visible result as explicit acceptance, then execute without asking again. |
 | 1.13.3 | Agents treated `ship-it` as a recommendation, and a newer empty turn could hide the latest working session in `status`. | Run `ship-it` directly after bounded verification without separate shipping permission, and report the latest session with recorded work. |
+| 1.13.4 | Agents treated target confirmation as a reason to ask for shipping permission even when the user had issued a standing production instruction. | State the evidence-backed target, apply matching standing authorization until revoked, and ship without a per-revision permission prompt. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -76,7 +77,7 @@ only to improve a score.
 - Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification. Unknown test telemetry never verifies a revision or permits ship-ready status, and by itself no longer forces the coaching score to 25; explicit failures and edits with no test remain penalized.
 - Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
 - Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
-- `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it directly without merely recommending it or asking for separate commit, push, or shipping permission. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
+- `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it immediately without merely recommending it, asking for separate commit, push, or shipping permission, or pausing for acknowledgement. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
 - Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. Failed or unresolved delivery is recorded and not auto-retried.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
 
@@ -162,7 +163,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 
 - Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
 - Stay in the current repository unless the user names another target.
-- Before an external change, confirm the repository, environment, artifact or revision, and user-visible acceptance result. This check is advisory and never blocks delivery.
+- Before an external change, identify and state the repository, environment, artifact or revision, and user-visible acceptance result. This evidence check is advisory, never blocks delivery, and is not a permission request when the target is already clear.
 - The primary agent owns requirements, integration, authorization, and acceptance.
 - Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.
 - Keep non-code agent messages terse and preserve exact technical terms. The hook sends this reminder once at session start, not after each prompt.
@@ -175,12 +176,13 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Command success does not prove service health.
 - A successful `git push`/`ship-it` with deployment skipped is not production completion when production deployment was requested.
 - Deployability is detected by presence of a tracked `.deploy-it.json`; trust and handoff enforcement are performed by `ship-it`/`deploy-it`.
-- If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this once and proceeds after explicit user authorization. Acceptance is intent, not a magic phrase: clear instructions to deploy, proceed, continue, or keep going until the visible result count. Once accepted, the agent must execute without asking again. The agent must not invent trust or self-authorize.
+- A standing user instruction to ship completed changes to production is explicit authorization for later matching revisions through an already-trusted tracked deployment contract until revoked. The agent states the matching target and executes without asking for per-revision permission.
+- If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this once and applies matching standing authorization. Without matching authorization, only the user may authorize a new target or deployment trust. Acceptance is intent, not a magic phrase: clear instructions to deploy, proceed, continue, or keep going until the visible result count. Once accepted, the agent must execute without asking again. The agent must not invent trust or self-authorize.
 - Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
 - Repeated-call reminders use widening intervals. Successful edits and passing checks reset their cadence.
 - Before main-thread implementation starts, actively look for an exact low-risk independent edit for a spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread.
 - One session-scoped Spark close review appears only after at least two successful edits without any Spark calls.
-- A verified edited revision is ship-ready. If the user has explicitly accepted the target/procedure above, implement the tracked contract or procedure, continue through `ship-it` and `deploy-it`, then verify the visible acceptance result.
+- A verified edited revision is ship-ready. Apply matching standing authorization or the user's explicit acceptance of the target and procedure, implement the tracked contract or procedure, continue through `ship-it` and `deploy-it`, then verify the visible acceptance result.
 - Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent trust, create a deployment command, or self-authorize.
 - Park useful work that is outside the requested goal. Return to it later.
 - Never duplicate ownership between primary and Spark; primary retains architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, integration, and final acceptance.

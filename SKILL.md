@@ -27,8 +27,9 @@ one-shot-tally help|-h|--help
 
 - Finish the requested outcome and verify edits.
 - Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
-- Before external changes, confirm the target, artifact or revision, and visible acceptance result.
-- Treat acceptance as intent, not a magic phrase. After presenting the target and visible acceptance procedure, a clear instruction to deploy, proceed, continue, or keep going until the result counts as explicit acceptance. Do not ask again once accepted.
+- Before external changes, identify and state the target, artifact or revision, and visible acceptance result. This confirmation is an evidence check, not a permission request. Continue without waiting for acknowledgement when the target is already clear.
+- Treat a standing user instruction to ship completed changes to production as explicit authorization for later matching revisions through an already-trusted tracked deployment contract until the user revokes it. Do not ask for per-revision permission.
+- Only the user may authorize a new production target or deployment trust. When no matching authorization exists, present the exact target and visible acceptance procedure once. Treat acceptance as intent, not a magic phrase, and do not ask again once accepted.
 - Keep requirements, integration, authorization, and acceptance with the primary agent.
 - Before main-thread implementation, actively look for an exact low-risk, independent edit for Spark. When one exists, give exact files, expected behavior, and validation.
 - Keep architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, and final acceptance in the primary thread.
@@ -44,7 +45,7 @@ one-shot-tally help|-h|--help
 - Start correction steers politely. Increase directness only after repeated corrections, and reset after a successful edit or passing check.
 - Space repeated-call steers farther apart as they recur. Reset after a successful edit or passing check; do not repeat guidance on every call.
 - After a verified run with at least two successful edits and no session Spark use, emit one review that asks whether safe Spark work existed. Never invent work to satisfy the review.
-- After the latest edit succeeds and the current revision is verified, run `ship-it` directly. Do not merely recommend it or ask for separate commit, push, or shipping permission. The hook process emits guidance and records outcomes; it does not spawn delivery commands itself.
+- After the latest edit succeeds and the current revision is verified, run `ship-it` immediately. Do not merely recommend it, ask for separate commit, push, or shipping permission, or pause for acknowledgement. The hook process emits guidance and records outcomes; it does not spawn delivery commands itself.
 - Detect a tracked `.deploy-it.json`, but leave contract validation, trust, and handoff to `ship-it` and `deploy-it`. Never retry failed delivery automatically.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.
 - Use `background complete ID --wake` only from the detached job. Manual completion omits `--wake`; completion is concurrency-safe, idempotent, and at-most-once, and cleanup commands are never injected into pane input.
