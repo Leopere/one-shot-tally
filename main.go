@@ -1171,10 +1171,6 @@ func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 	if json.Unmarshal(raw, &value) != nil {
 		return false, false
 	}
-	root, ok := value.(map[string]any)
-	if !ok {
-		return false, false
-	}
 	known, failed := false, false
 	var inspect func(map[string]any, bool)
 	var inspectValue func(any, bool)
@@ -1228,7 +1224,7 @@ func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 			}
 		}
 	}
-	inspect(root, true)
+	inspectValue(value, true)
 	return known, known && !failed
 }
 

@@ -30,6 +30,7 @@ func TestExplicitResponseResult(t *testing.T) {
 		{name: "action_fail_json_text_unknown", raw: `{"output":"{\"Action\":\"fail\",\"Package\":\"x\"}"}`, want: struct{ known, pass bool }{false, false}},
 		{name: "serialized_command_result_passes", raw: `{"output":[{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]}`, want: struct{ known, pass bool }{true, true}},
 		{name: "serialized_command_result_fails", raw: `{"output":[{"type":"input_text","text":"{\"exit_code\":2,\"output\":\"bad\"}"}]}`, want: struct{ known, pass bool }{true, false}},
+		{name: "top_level_content_blocks_pass", raw: `[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]`, want: struct{ known, pass bool }{true, true}},
 		{name: "human_tool_output_unknown", raw: `{"output":[{"type":"input_text","text":"Script completed with passing tests"}]}`, want: struct{ known, pass bool }{false, false}},
 		{name: "transport_success_with_failure_text_unknown", raw: `{"success":true,"output":"FAILED tests/test_api.py"}`, want: struct{ known, pass bool }{false, false}},
 		{name: "zero_exit_with_stderr_warning_passes", raw: `{"exit_code":0,"stderr":"warning"}`, want: struct{ known, pass bool }{true, true}},
