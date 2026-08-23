@@ -262,8 +262,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally grade [--json]   alias for status")
 	fmt.Fprintln(w, "  one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]")
 	fmt.Fprintln(w, "                                  record cleanup and the agent wake-up target")
-	fmt.Fprintln(w, "  one-shot-tally background complete ID")
-	fmt.Fprintln(w, "                                  mark complete and wake the originating tmux pane")
+	fmt.Fprintln(w, "  one-shot-tally background complete ID [--wake]")
+	fmt.Fprintln(w, "                                  mark complete; --wake notifies the recorded tmux pane")
 	fmt.Fprintln(w, "  one-shot-tally background list  list recorded background jobs and cleanup commands")
 	fmt.Fprintln(w, "  one-shot-tally todo add TEXT --context WHY")
 	fmt.Fprintln(w, "                                  park discovered out-of-scope work and return to the goal")
@@ -713,7 +713,7 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.BackgroundRecord && responsePassed(e.ToolResponse) {
 			s.BackgroundRecords++
 		}
-		if pending.BackgroundComplete && responsePassed(e.ToolResponse) {
+		if pending.BackgroundComplete && responsePassed(e.ToolResponse) && !bytes.Contains(e.ToolResponse, []byte("already completed; no wake sent")) {
 			s.BackgroundCompletions++
 		}
 		if pending.Production && resultKnown && resultSucceeded {
@@ -1886,6 +1886,15 @@ func recordBackground(args []string, w io.Writer) error {
 		}
 		target = args[4]
 	}
+	p, err := backgroundJobsPath()
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
 	jobs, err := loadBackgroundJobs()
 	if err != nil {
 		return err
@@ -1894,14 +1903,24 @@ func recordBackground(args []string, w io.Writer) error {
 	if err := saveBackgroundJobs(jobs); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "Recorded background job %s. Arrange completion with: one-shot-tally background complete %s\n", id, id)
+	fmt.Fprintf(w, "Recorded background job %s. Arrange detached completion with: one-shot-tally background complete %s --wake\n", id, id)
 	return nil
 }
 
 func completeBackground(args []string, w io.Writer) error {
-	if len(args) != 1 {
-		return errors.New("usage: one-shot-tally background complete ID")
+	if len(args) < 1 || len(args) > 2 || (len(args) == 2 && args[1] != "--wake") {
+		return errors.New("usage: one-shot-tally background complete ID [--wake]")
 	}
+	wake := len(args) == 2
+	p, err := backgroundJobsPath()
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
 	jobs, err := loadBackgroundJobs()
 	if err != nil {
 		return err
@@ -1910,18 +1929,22 @@ func completeBackground(args []string, w io.Writer) error {
 	if !ok {
 		return fmt.Errorf("background job %q is not recorded", args[0])
 	}
+	if !job.CompletedAt.IsZero() {
+		fmt.Fprintf(w, "Background job %s was already completed; no wake sent.\n", job.ID)
+		return nil
+	}
 	job.CompletedAt = time.Now().UTC()
 	jobs[job.ID] = job
 	if err := saveBackgroundJobs(jobs); err != nil {
 		return err
 	}
-	if job.TmuxTarget != "" {
-		message := fmt.Sprintf("Background job %s completed. Resume the originating task now; cleanup record: %s", job.ID, singleLine(job.Cleanup))
+	if wake && job.TmuxTarget != "" {
+		message := fmt.Sprintf("Background job %s completed. Inspect its result only if it belongs to the active task.", job.ID)
 		if err := exec.Command("tmux", "send-keys", "-l", "-t", job.TmuxTarget, message).Run(); err != nil {
-			return fmt.Errorf("job recorded complete, but tmux wake-up failed: %w", err)
+			return fmt.Errorf("job recorded complete, but its one wake attempt failed and will not be retried automatically: %w", err)
 		}
 		if err := exec.Command("tmux", "send-keys", "-t", job.TmuxTarget, "Enter").Run(); err != nil {
-			return fmt.Errorf("job recorded complete, but tmux Enter failed: %w", err)
+			return fmt.Errorf("job recorded complete, but its one Enter attempt failed and will not be retried automatically: %w", err)
 		}
 	}
 	fmt.Fprintf(w, "Completed background job %s; cleanup: %s\n", job.ID, job.Cleanup)

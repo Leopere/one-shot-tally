@@ -11,7 +11,7 @@ one-shot-tally                  process a hook event from stdin
 one-shot-tally status [--json]
 one-shot-tally grade [--json]
 one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]
-one-shot-tally background complete ID
+one-shot-tally background complete ID [--wake]
 one-shot-tally background list
 one-shot-tally todo add TEXT --context WHY
 one-shot-tally todo list [--all]
@@ -46,6 +46,7 @@ one-shot-tally help|-h|--help
 - After the latest edit succeeds and the current revision is verified, run `ship-it` directly. Do not merely recommend it or ask for separate commit, push, or shipping permission. The hook process emits guidance and records outcomes; it does not spawn delivery commands itself.
 - Detect a tracked `.deploy-it.json`, but leave contract validation, trust, and handoff to `ship-it` and `deploy-it`. Never retry failed delivery automatically.
 - Record detached work instead of polling. Park useful out-of-scope work as a TODO.
+- Use `background complete ID --wake` only from the detached job. Manual completion omits `--wake`; completion is concurrency-safe, idempotent, and at-most-once, and cleanup commands are never injected into pane input.
 - Never block Git, `ship-it`, or `deploy-it`.
 
 ## Resume a goal

@@ -793,7 +793,7 @@ func TestBackgroundRecordCompletesAndWakesWithoutPolling(t *testing.T) {
 	if err := backgroundCommand([]string{"record", "compile-docs", "--cleanup", "tmux kill-session -t compile-docs"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "background complete compile-docs") {
+	if !strings.Contains(out.String(), "background complete compile-docs --wake") {
 		t.Fatalf("record lacks completion instruction: %s", out.String())
 	}
 	jobs, err := loadBackgroundJobs()
@@ -801,7 +801,7 @@ func TestBackgroundRecordCompletesAndWakesWithoutPolling(t *testing.T) {
 		t.Fatalf("job record = %#v, err=%v", jobs, err)
 	}
 	out.Reset()
-	if err := backgroundCommand([]string{"complete", "compile-docs"}, &out); err != nil {
+	if err := backgroundCommand([]string{"complete", "compile-docs", "--wake"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	jobs, _ = loadBackgroundJobs()
@@ -809,8 +809,109 @@ func TestBackgroundRecordCompletesAndWakesWithoutPolling(t *testing.T) {
 		t.Fatalf("job not completed with cleanup reminder: %#v %s", jobs, out.String())
 	}
 	log, err := os.ReadFile(logPath)
-	if err != nil || !strings.Contains(string(log), "send-keys -l -t %7 Background job compile-docs completed") || !strings.Contains(string(log), "send-keys -t %7 Enter") {
+	if err != nil || !strings.Contains(string(log), "send-keys -l -t %7 Background job compile-docs completed") || !strings.Contains(string(log), "only if it belongs to the active task") || strings.Contains(string(log), "cleanup record") || strings.Contains(string(log), "tmux kill-session") || !strings.Contains(string(log), "send-keys -t %7 Enter") {
 		t.Fatalf("origin pane was not woken: %q err=%v", log, err)
+	}
+	completedAt := jobs["compile-docs"].CompletedAt
+	out.Reset()
+	if err := backgroundCommand([]string{"complete", "compile-docs", "--wake"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ = loadBackgroundJobs()
+	if !jobs["compile-docs"].CompletedAt.Equal(completedAt) || !strings.Contains(out.String(), "already completed; no wake sent") {
+		t.Fatalf("duplicate completion was not idempotent: %#v %s", jobs["compile-docs"], out.String())
+	}
+	log, err = os.ReadFile(logPath)
+	if err != nil || strings.Count(string(log), "send-keys -l -t %7") != 1 || strings.Count(string(log), "send-keys -t %7 Enter") != 1 {
+		t.Fatalf("duplicate completion sent another wake: %q err=%v", log, err)
+	}
+}
+
+func TestManualBackgroundCompletionDoesNotInjectPaneInput(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%7")
+	logPath := filepath.Join(dir, "tmux.log")
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmuxPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_TMUX_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := backgroundCommand([]string{"record", "manual", "--cleanup", "true"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := backgroundCommand([]string{"complete", "manual"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manual completion injected pane input: err=%v", err)
+	}
+	if !strings.Contains(out.String(), "Completed background job manual") {
+		t.Fatalf("manual completion output = %q", out.String())
+	}
+}
+
+func TestFailedBackgroundWakeIsNotRetried(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%7")
+	logPath := filepath.Join(dir, "tmux.log")
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmuxPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_TMUX_LOG\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := backgroundCommand([]string{"record", "failed-wake", "--cleanup", "true"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err := backgroundCommand([]string{"complete", "failed-wake", "--wake"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "will not be retried automatically") {
+		t.Fatalf("wake failure = %v", err)
+	}
+	if err := backgroundCommand([]string{"complete", "failed-wake", "--wake"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil || strings.Count(string(log), "send-keys") != 1 {
+		t.Fatalf("failed wake was retried: %q err=%v", log, err)
+	}
+}
+
+func TestConcurrentBackgroundCompletionSendsOneWake(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%7")
+	logPath := filepath.Join(dir, "tmux.log")
+	t.Setenv("FAKE_TMUX_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmuxPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_TMUX_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := backgroundCommand([]string{"record", "concurrent", "--cleanup", "true"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			errs <- backgroundCommand([]string{"complete", "concurrent", "--wake"}, io.Discard)
+		}()
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil || strings.Count(string(log), "send-keys -l -t %7") != 1 || strings.Count(string(log), "send-keys -t %7 Enter") != 1 {
+		t.Fatalf("concurrent completion sent duplicate wake: %q err=%v", log, err)
 	}
 }
 

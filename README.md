@@ -117,7 +117,7 @@ one-shot-tally                  process a hook event from stdin
 one-shot-tally status [--json]
 one-shot-tally grade [--json]
 one-shot-tally background record ID --cleanup CMD [--tmux-target PANE]
-one-shot-tally background complete ID
+one-shot-tally background complete ID [--wake]
 one-shot-tally background list
 one-shot-tally todo add TEXT --context WHY
 one-shot-tally todo list [--all]
@@ -195,11 +195,15 @@ one-shot-tally background record docs-build --cleanup 'tmux kill-session -t docs
 Complete jobs at exit:
 
 ```sh
-one-shot-tally background complete docs-build
+one-shot-tally background complete docs-build --wake
 ```
 
 `record` captures `$TMUX_PANE` by default in tmux.
-`complete` wakes the originating pane with resume-and-cleanup guidance.
+`complete` is a silent, idempotent bookkeeping operation by default. Detached
+jobs use `--wake` to send a neutral completion notice to the recorded pane.
+Cleanup commands remain in durable state and are never injected as pane input.
+Wake delivery is at-most-once: a failed wake is reported but never retried
+automatically. Detached jobs created under the older contract must add `--wake`.
 `background list` shows unfinished durable records.
 
 ## Durable TODO flow
