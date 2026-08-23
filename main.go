@@ -1177,6 +1177,26 @@ func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 	}
 	known, failed := false, false
 	var inspect func(map[string]any, bool)
+	var inspectValue func(any, bool)
+	inspectValue = func(value any, root bool) {
+		switch item := value.(type) {
+		case []any:
+			for _, child := range item {
+				inspectValue(child, false)
+			}
+		case string:
+			text := strings.TrimSpace(item)
+			if text == "" || (text[0] != '{' && text[0] != '[') {
+				return
+			}
+			var decoded any
+			if json.Unmarshal([]byte(text), &decoded) == nil {
+				inspectValue(decoded, false)
+			}
+		case map[string]any:
+			inspect(item, root)
+		}
+	}
 	inspect = func(envelope map[string]any, root bool) {
 		for key, child := range envelope {
 			switch strings.ToLower(key) {
@@ -1203,10 +1223,8 @@ func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 						known, failed = true, true
 					}
 				}
-			case "result", "response", "metadata", "tool_response":
-				if nested, ok := child.(map[string]any); ok {
-					inspect(nested, false)
-				}
+			case "result", "response", "metadata", "tool_response", "structuredcontent", "structured_content", "content", "output", "text":
+				inspectValue(child, false)
 			}
 		}
 	}

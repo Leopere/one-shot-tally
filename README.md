@@ -107,6 +107,10 @@ Use `/hooks` in Codex to review and trust that configuration.
 
 The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
 If bookkeeping fails, the hook reports the error and lets the Codex tool continue.
+Command wrappers must preserve their full machine-readable result, including
+`exit_code`, in the tool response. For `functions.exec`, append the complete
+`exec_command` result (for example, `text(result)`), not only `result.output`.
+The tally deliberately does not infer success from human-readable output.
 Goal history uses `$CODEX_HOME/goals_1.sqlite` for named accounts and otherwise `$HOME/.codex/goals_1.sqlite`.
 It requires the `sqlite3` command with JSON output support. The installer checks it.
 
