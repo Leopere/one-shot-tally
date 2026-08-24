@@ -1040,6 +1040,46 @@ func TestNewestPromptAmendsCompatibleScope(t *testing.T) {
 	if text := string(mustJSON(ordinary)); text != "{}" {
 		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
 	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt2", "hook_event_name": "UserPromptSubmit", "prompt": "Something went off the rails on tmux tab 5; determine whether hooks need correction."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt3", "hook_event_name": "UserPromptSubmit", "prompt": "We're working on our own code; I don't think it should be restricted."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt4", "hook_event_name": "UserPromptSubmit", "prompt": "Do not stop until the tests pass."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt5", "hook_event_name": "UserPromptSubmit", "prompt": "Use SQLite instead of Postgres."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt6", "hook_event_name": "UserPromptSubmit", "prompt": "This function is meant to parse JSON."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt7", "hook_event_name": "UserPromptSubmit", "prompt": "Stop the dev server."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	ordinary = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt8", "hook_event_name": "UserPromptSubmit", "prompt": "Wrong checksum in diagnostic output."})
+	if text := string(mustJSON(ordinary)); text != "{}" {
+		t.Fatalf("ordinary prompt received generic policy: %#v", ordinary)
+	}
+	correction := hook(t, dir, map[string]any{"session_id": "s-solo", "turn_id": "corr-a", "hook_event_name": "UserPromptSubmit", "prompt": "Use repository B, not repository A."})
+	if text := string(mustJSON(correction)); text == "{}" {
+		t.Fatalf("correction prompt received no guidance: %#v", correction)
+	}
+	correction = hook(t, dir, map[string]any{"session_id": "s-solo", "turn_id": "corr-b", "hook_event_name": "UserPromptSubmit", "prompt": "Actually, switch from main to release."})
+	if text := string(mustJSON(correction)); text == "{}" {
+		t.Fatalf("correction prompt received no guidance: %#v", correction)
+	}
+	correction = hook(t, dir, map[string]any{"session_id": "s-solo", "turn_id": "corr-c", "hook_event_name": "UserPromptSubmit", "prompt": "That edit belongs in bar.go, not foo.go."})
+	if text := string(mustJSON(correction)); text == "{}" {
+		t.Fatalf("correction prompt received no guidance: %#v", correction)
+	}
 	corrected := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, this is meant to deploy ../wmi instead"})
 	text := string(mustJSON(corrected))
 	if !strings.Contains(text, "Thanks for the correction") || !strings.Contains(text, "conflicting part") || !strings.Contains(text, "confirm the target") || strings.Contains(text, "stop and realign") {

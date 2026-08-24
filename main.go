@@ -40,6 +40,7 @@ var (
 	externalMutationRE   = regexp.MustCompile(`(?i)(curl\b[^\n]*(--request|-X)\s*(POST|PUT|PATCH|DELETE)\b|gh\s+api\b[^\n]*(--method|-X)\s*(POST|PUT|PATCH|DELETE)\b|\b(bw|op|vault)\b[^\n]*\b(create|delete|edit|update|move)\b|docker\s+(service\s+update|stack\s+deploy)|kubectl\s+(apply|delete)|terraform\s+apply)`)
 	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
 	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
+	correctionScopeRE    = regexp.MustCompile(`(?i)\b(repo|repository|target|branch|worktree|workspace|directory|folder|environment|production|staging|deploy|deployment|file|edit|codebase|correction)\b`)
 	gitCommitRE          = regexp.MustCompile(`(?i)^\s*git\s+commit\b`)
 	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
 	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
@@ -356,13 +357,28 @@ func correctionGuidance(streak int) string {
 }
 
 func correctionPrompt(prompt string) bool {
-	prompt = strings.ToLower(prompt)
-	for _, marker := range []string{"wrong", "instead", "meant to", "stop ", "stop,", "stop:", "do not ", "don't ", "off the rails", "not the "} {
-		if strings.Contains(prompt, marker) {
+	prompt = strings.ToLower(strings.TrimSpace(prompt))
+	if strings.HasPrefix(prompt, "no, stop ") ||
+		strings.HasPrefix(prompt, "actually, switch from ") ||
+		strings.HasPrefix(prompt, "actually switch from ") {
+		return true
+	}
+	if !correctionScopeRE.MatchString(prompt) {
+		return false
+	}
+	for _, scope := range []string{"repo", "repository", "target", "branch", "worktree", "workspace", "directory", "folder", "environment", "production", "staging", "deploy", "deployment", "file", "edit", "codebase", "correction"} {
+		if strings.HasPrefix(prompt, "wrong "+scope) {
 			return true
 		}
 	}
-	return false
+	return strings.HasPrefix(prompt, "stop ") ||
+		strings.HasPrefix(prompt, "stop,") ||
+		strings.HasPrefix(prompt, "stop:") ||
+		strings.HasPrefix(prompt, "please stop ") ||
+		strings.Contains(prompt, "switch from ") ||
+		strings.Contains(prompt, "belongs in ") ||
+		strings.Contains(prompt, "meant to") && strings.Contains(prompt, "instead") ||
+		strings.HasPrefix(prompt, "use ") && (strings.Contains(prompt, " instead") || strings.Contains(prompt, ", not "))
 }
 
 func deliveryInvocations(command string) (shipping, deploying bool) {
