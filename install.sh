@@ -17,5 +17,5 @@ install -m 0644 SKILL.md "$skill_dir/SKILL.md"
 cmp -s SKILL.md "$skill_dir/SKILL.md"
 version_output=$("$bin_dir/one-shot-tally" version)
 printf '%s\n' "$version_output"
-printf '%s\n' "$version_output" | grep -Fq 'one-shot-tally 1.13.4 | ColinKnapp.com'
+printf '%s\n' "$version_output" | grep -Fq 'one-shot-tally 1.13.5 | ColinKnapp.com'
 printf '%s\n' "one-shot-tally: production install verified"

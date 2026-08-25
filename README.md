@@ -65,6 +65,7 @@ only to improve a score.
 | 1.13.2 | Agents repeatedly requested a magic approval phrase after the user had already authorized a presented production procedure. | Treat clear instructions to deploy, proceed, continue, or keep going until the visible result as explicit acceptance, then execute without asking again. |
 | 1.13.3 | Agents treated `ship-it` as a recommendation, and a newer empty turn could hide the latest working session in `status`. | Run `ship-it` directly after bounded verification without separate shipping permission, and report the latest session with recorded work. |
 | 1.13.4 | Agents treated target confirmation as a reason to ask for shipping permission even when the user had issued a standing production instruction. | State the evidence-backed target, apply matching standing authorization until revoked, and ship without a per-revision permission prompt. |
+| 1.13.5 | Agents sometimes stalled on or retried GitHub-hosted checks when local runner health was uncertain. | Never rely on GitHub Actions public runners. Use the self-hosted local runner and labels documented in `~/dev/gh-runner`. If that runner stalls or is insufficient, diagnose and repair it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), then test it. GitHub-hosted runner labels are a shipping defect; hard enforcement remains in `ship-it`. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -78,6 +79,7 @@ only to improve a score.
 - Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
 - Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
 - `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it immediately without merely recommending it, asking for separate commit, push, or shipping permission, or pausing for acknowledgement. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
+- Do not use GitHub-hosted/public runners for delivery steps that depend on CI behavior. Verify and use the self-hosted local runner from `~/dev/gh-runner` and its documented labels. If the local runner is unavailable or insufficient, diagnose and fix it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), test it, then resume delivery. GitHub-hosted runner labels are a shipping defect.
 - Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. Failed or unresolved delivery is recorded and not auto-retried.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
 
@@ -164,6 +166,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
 - Stay in the current repository unless the user names another target.
 - Before an external change, identify and state the repository, environment, artifact or revision, and user-visible acceptance result. This evidence check is advisory, never blocks delivery, and is not a permission request when the target is already clear.
+- Do not plan to rely on GitHub-hosted/public runners. For CI-dependent work, tune for and require the self-hosted local runner at `~/dev/gh-runner`; if it is down or insufficient, diagnose and fix it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), then re-test before continuing.
 - The primary agent owns requirements, integration, authorization, and acceptance.
 - Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.
 - Keep non-code agent messages terse and preserve exact technical terms. The hook sends this reminder once at session start, not after each prompt.

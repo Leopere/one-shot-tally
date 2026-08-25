@@ -643,7 +643,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.13.4", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.13.5", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -736,7 +736,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.13.4 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally 1.13.5 | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}
@@ -996,12 +996,12 @@ func TestSessionGuidanceIsConcise(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
 	text := string(mustJSON(out))
-	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "evidence, not permission", "without waiting", "run ship-it immediately", "Do not recommend it", "separate shipping permission", "do not stop at the push", "standing user instruction", "matching revisions", "until revoked", "Do not ask per-revision", "Only the user may authorize a new target or deployment trust", "after acceptance, do not ask again", "Continue through ship-it/deploy-it", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent, disjoint edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
+	for _, want := range []string{"Finish the latest requested outcome", "verify edits", "score is advisory", "current repository", "external changes", "evidence, not permission", "without waiting", "run ship-it immediately", "Do not recommend it", "separate shipping permission", "do not stop at the push", "standing user instruction", "matching revisions", "until revoked", "Do not ask per-revision", "Only the user may authorize a new target or deployment trust", "after acceptance, do not ask again", "Continue through ship-it/deploy-it", "Never rely on GitHub Actions public or GitHub-hosted runners", "self-hosted local runner", "~/dev/gh-runner", "diagnose and fix that runner first", "GitHub-hosted runner labels as a shipping defect", "explorers for evidence", "workers or implementors for scoped changes", "reviewers for checks", "actively look for an exact, low-risk, independent, disjoint edit", "spark_worker", "When one exists", "otherwise continue in the main thread", "exact files, expected behavior, and validation", "security judgment", "ship/deploy", "sequential work", "overlapping ownership", "non-code agent messages terse", "preserve exact technical terms"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("guidance missing %q: %#v", want, out)
 		}
 	}
-	if len(text) > 1600 {
+	if len(text) > 1900 {
 		t.Fatalf("session guidance is too verbose: %d bytes", len(text))
 	}
 }

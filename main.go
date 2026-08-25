@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.4"
+const binaryVersion = "1.13.5"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
@@ -30,6 +30,8 @@ const targetGuidance = "Before external changes, state target and visible result
 const acceptanceGuidance = "A standing user instruction to ship completed changes to production authorizes matching revisions through an already-trusted tracked contract until revoked. Do not ask per-revision. Only the user may authorize a new target or deployment trust. Otherwise present the procedure once; after acceptance, do not ask again."
 
 const deliveryGuidance = "After the latest edit succeeds and is verified, run ship-it immediately. Do not recommend it, ask separate shipping permission, or wait. With no production deploy-it contract, state target, revision, and visible acceptance procedure once; do not stop at the push. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify; never invent trust."
+
+const runnerGuidance = "Never rely on GitHub Actions public or GitHub-hosted runners. Use the existing self-hosted local runner and its labels documented in ~/dev/gh-runner. If it stalls or is insufficient, diagnose and fix that runner first. Treat GitHub-hosted runner labels as a shipping defect."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -292,7 +294,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome; verify edits. Tally score is advisory. Stay in the current repository unless user names another target. " + targetGuidance + " " + deliveryGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
+		context := "Finish the latest requested outcome; verify edits. Tally score is advisory. Stay in the current repository unless user names another target. " + targetGuidance + " " + deliveryGuidance + " " + runnerGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
