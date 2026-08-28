@@ -767,7 +767,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.13.7", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.13.6", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -860,7 +860,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.13.7 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally 1.13.6 | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}

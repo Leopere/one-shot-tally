@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.7"
+const binaryVersion = "1.13.6"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
