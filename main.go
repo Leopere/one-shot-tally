@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.5"
+const binaryVersion = "1.13.6"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
@@ -29,7 +29,7 @@ const targetGuidance = "Before external changes, state target and visible result
 
 const acceptanceGuidance = "A standing user instruction to ship completed changes to production authorizes matching revisions through an already-trusted tracked contract until revoked. Do not ask per-revision. Only the user may authorize a new target or deployment trust. Otherwise present the procedure once; after acceptance, do not ask again."
 
-const deliveryGuidance = "After the latest edit succeeds and is verified, run ship-it immediately. Do not recommend it, ask separate shipping permission, or wait. With no production deploy-it contract, state target, revision, and visible acceptance procedure once; do not stop at the push. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify; never invent trust."
+const deliveryGuidance = "After the latest edit succeeds and is verified, run ship-it immediately. Do not recommend it, ask separate shipping permission, or wait. With no production deploy-it contract, state target, revision, and visible acceptance procedure once; do not stop at the push. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify; never invent trust. Delivery failure is not a stopping point: fix its in-scope cause, then resume the same authorized trusted handoff. Never blindly retry."
 
 const runnerGuidance = "Never rely on GitHub Actions public or GitHub-hosted runners. Use the existing self-hosted local runner and its labels documented in ~/dev/gh-runner. If it stalls or is insufficient, diagnose and fix that runner first. Treat GitHub-hosted runner labels as a shipping defect."
 
@@ -835,22 +835,22 @@ func stop(e event, w io.Writer) error {
 
 func closingLoop(s state, deployContract bool) string {
 	if s.LastDeployResultKnown && !s.LastDeploySucceeded {
-		return " Closing loop: deploy-it did not complete. Do not rerun it automatically; diagnose the preserved failure before another authorized deployment."
+		return " Closing loop: deploy-it did not complete. This is not a stopping point. Do not blindly rerun it. Diagnose the preserved failure, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.LastShipResultKnown && !s.LastShipSucceeded {
-		return " Closing loop: ship-it did not complete cleanly, and Git may already be shipped. Preserve the failure, diagnose it, and do not rerun a failed deployment automatically."
+		return " Closing loop: ship-it did not complete cleanly, and Git may already be shipped. This is not a stopping point. Preserve the failure, inspect Git and deployment state, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Do not blindly repeat the failed command. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.DeployAttempts > 0 && !s.LastDeployResultKnown {
-		return " Closing loop: deploy-it returned no explicit result. Inspect deployment state before another authorized attempt; do not retry automatically."
+		return " Closing loop: deploy-it returned no explicit result. This is not a stopping point. Inspect deployment state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Do not blindly repeat the unresolved command. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.ShipAttempts > 0 && !s.LastShipResultKnown {
-		return " Closing loop: ship-it returned no explicit result, and Git may already be shipped. Inspect repository and deployment state before retrying."
+		return " Closing loop: ship-it returned no explicit result, and Git may already be shipped. This is not a stopping point. Inspect repository and deployment state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.LastProductionResultKnown && !s.LastProductionSucceeded {
-		return " Closing loop: the recorded delivery action did not complete. Preserve its failure and inspect external state before retrying."
+		return " Closing loop: the recorded delivery action did not complete. This is not a stopping point. Preserve its failure, inspect external state, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.ProductionAttempts > 0 && !s.LastProductionResultKnown {
-		return " Closing loop: the recorded delivery action returned no explicit result. Inspect external state before retrying."
+		return " Closing loop: the recorded delivery action returned no explicit result. This is not a stopping point. Inspect external state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.Revision == 0 {
 		return ""
@@ -883,7 +883,7 @@ func outcomeAdvisory(outcome string) string {
 	case outcomeActivity:
 		return "This hook observed activity but cannot infer task completion or user-visible acceptance."
 	case outcomeFailed:
-		return "A recorded action or check failed; use that evidence before claiming completion."
+		return "A recorded action or check failed; use that evidence to fix the cause and continue to the requested acceptance result before claiming completion."
 	default:
 		return "Recorded verification passed; confirm any required user-visible acceptance."
 	}
