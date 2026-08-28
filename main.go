@@ -85,6 +85,7 @@ type pendingCall struct {
 	Edit               bool      `json:"edit,omitempty"`
 	Shipping           bool      `json:"shipping,omitempty"`
 	Deploying          bool      `json:"deploying,omitempty"`
+	DeployCommitMatch  bool      `json:"deploy_commit_match,omitempty"`
 	TestEligible       bool      `json:"test_eligible,omitempty"`
 	WorktreeKnown      bool      `json:"worktree_known,omitempty"`
 	WorktreeSnapshot   string    `json:"worktree_snapshot,omitempty"`
@@ -137,9 +138,12 @@ type state struct {
 	LastShipSucceeded            bool                   `json:"last_ship_succeeded"`
 	LastShipResultKnown          bool                   `json:"last_ship_result_known"`
 	LastShipResultSequence       int                    `json:"last_ship_result_sequence"`
+	LastShipRevision             int                    `json:"last_ship_revision"`
 	LastDeploySucceeded          bool                   `json:"last_deploy_succeeded"`
 	LastDeployResultKnown        bool                   `json:"last_deploy_result_known"`
 	LastDeployResultSequence     int                    `json:"last_deploy_result_sequence"`
+	LastDeployRevision           int                    `json:"last_deploy_revision"`
+	LastDeployCommitMatch        bool                   `json:"last_deploy_commit_match"`
 	LastProductionSucceeded      bool                   `json:"last_production_succeeded"`
 	LastProductionResultKnown    bool                   `json:"last_production_result_known"`
 	LastProductionResultSequence int                    `json:"last_production_result_sequence"`
@@ -544,12 +548,17 @@ func preToolUse(e event, w io.Writer) error {
 		s.LastShipResultSequence = s.TotalCalls
 		s.LastShipResultKnown = false
 		s.LastShipSucceeded = false
+		s.LastShipRevision = s.Revision
 	}
+	deployCommitMatch := false
 	if isDeploying {
 		s.DeployAttempts++
 		s.LastDeployResultSequence = s.TotalCalls
 		s.LastDeployResultKnown = false
 		s.LastDeploySucceeded = false
+		s.LastDeployRevision = s.Revision
+		deployCommitMatch = deployCommitMatchesHead(command, e.CWD)
+		s.LastDeployCommitMatch = deployCommitMatch
 	}
 	if isProduction {
 		s.ProductionAttempts++
@@ -563,7 +572,7 @@ func preToolUse(e event, w io.Writer) error {
 		worktreeSnapshot, worktreeKnown = gitWorktreeSnapshot(e.CWD)
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
 	}
 	var messages []string
 	if goalChange == "start" {
@@ -751,11 +760,14 @@ func postToolUse(e event, w io.Writer) error {
 			s.LastShipResultSequence = pending.Sequence
 			s.LastShipResultKnown = resultKnown
 			s.LastShipSucceeded = resultKnown && resultSucceeded
+			s.LastShipRevision = pending.Revision
 		}
 		if pending.Deploying && pending.Sequence >= s.LastDeployResultSequence {
 			s.LastDeployResultSequence = pending.Sequence
 			s.LastDeployResultKnown = resultKnown
 			s.LastDeploySucceeded = resultKnown && resultSucceeded
+			s.LastDeployRevision = pending.Revision
+			s.LastDeployCommitMatch = pending.DeployCommitMatch
 		}
 		if pending.Deploying && resultKnown && resultSucceeded {
 			s.DeployCompletions++
@@ -846,7 +858,7 @@ func stop(e event, w io.Writer) error {
 }
 
 func closingLoop(s state, deployContract bool) string {
-	kind, attempted, known, succeeded := latestDeliveryResult(s)
+	kind, attempted, known, succeeded, _ := latestDeliveryResult(s)
 	if attempted && known && !succeeded && kind == "deploy" {
 		return " Closing loop: deploy-it did not complete. This is not a stopping point. Do not blindly rerun it. Diagnose the preserved failure, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
@@ -874,10 +886,10 @@ func closingLoop(s state, deployContract bool) string {
 	if !finalPassed(s) {
 		return " Closing loop: verify the current revision before shipping."
 	}
-	if s.DeployCompletions > 0 {
+	if recoveredCurrentDeployment(s) {
 		return " Closing loop: shipping and deployment completed. Confirm the user-visible acceptance result."
 	}
-	if s.ShipCompletions > 0 {
+	if shippedCurrentRevision(s) {
 		if deployContract {
 			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result. Apply matching standing production authorization without asking for per-revision permission; do not create new deployment trust without exact user authorization."
 		}
@@ -993,7 +1005,7 @@ func finalPassed(s state) bool {
 }
 
 func recordedOutcome(s state) string {
-	_, deliveryAttempted, deliveryKnown, deliverySucceeded := latestDeliveryResult(s)
+	_, deliveryAttempted, deliveryKnown, deliverySucceeded, _ := latestDeliveryResult(s)
 	if deliveryAttempted && deliveryKnown && !deliverySucceeded {
 		return outcomeFailed
 	}
@@ -1023,22 +1035,35 @@ func verifiedCurrentRevision(s state) bool {
 }
 
 func requiredDeliveryPending(s state) bool {
-	if !verifiedCurrentRevision(s) {
+	if currentDeliveryComplete(s) {
 		return false
 	}
-	latestKind, attempted, known, succeeded := latestDeliveryResult(s)
-	if !attempted || !known || !succeeded {
+	_, attempted, known, succeeded, _ := latestDeliveryResult(s)
+	if attempted && (!known || !succeeded) {
 		return true
 	}
-	if latestKind == "ship" {
-		return false
+	if verifiedCurrentRevision(s) {
+		return true
 	}
-	return latestKind != "deploy" || s.ShipAttempts == 0
+	return s.Revision > 0 && (s.ShipAttempts > 0 || s.DeployAttempts > 0)
 }
 
-func latestDeliveryResult(s state) (kind string, attempted, known, succeeded bool) {
+func currentDeliveryComplete(s state) bool {
+	return shippedCurrentRevision(s) || recoveredCurrentDeployment(s)
+}
+
+func shippedCurrentRevision(s state) bool {
+	return s.LastShipRevision == s.Revision && s.LastShipResultKnown && s.LastShipSucceeded
+}
+
+func recoveredCurrentDeployment(s state) bool {
+	return s.LastShipRevision == s.Revision && s.ShipAttempts > 0 &&
+		s.LastDeployRevision == s.Revision && s.LastDeployResultKnown && s.LastDeploySucceeded && s.LastDeployCommitMatch
+}
+
+func latestDeliveryResult(s state) (kind string, attempted, known, succeeded bool, revision int) {
 	sequence := -1
-	consider := func(candidateKind string, attempts, candidateSequence int, candidateKnown, candidateSucceeded bool) {
+	consider := func(candidateKind string, attempts, candidateSequence, candidateRevision int, candidateKnown, candidateSucceeded bool) {
 		if attempts == 0 || candidateSequence < sequence {
 			return
 		}
@@ -1046,12 +1071,50 @@ func latestDeliveryResult(s state) (kind string, attempted, known, succeeded boo
 		attempted = true
 		known = candidateKnown
 		succeeded = candidateKnown && candidateSucceeded
+		revision = candidateRevision
 		sequence = candidateSequence
 	}
-	consider("production", s.ProductionAttempts, s.LastProductionResultSequence, s.LastProductionResultKnown, s.LastProductionSucceeded)
-	consider("ship", s.ShipAttempts, s.LastShipResultSequence, s.LastShipResultKnown, s.LastShipSucceeded)
-	consider("deploy", s.DeployAttempts, s.LastDeployResultSequence, s.LastDeployResultKnown, s.LastDeploySucceeded)
-	return kind, attempted, known, succeeded
+	consider("production", s.ProductionAttempts, s.LastProductionResultSequence, s.Revision, s.LastProductionResultKnown, s.LastProductionSucceeded)
+	consider("ship", s.ShipAttempts, s.LastShipResultSequence, s.LastShipRevision, s.LastShipResultKnown, s.LastShipSucceeded)
+	consider("deploy", s.DeployAttempts, s.LastDeployResultSequence, s.LastDeployRevision, s.LastDeployResultKnown, s.LastDeploySucceeded)
+	return kind, attempted, known, succeeded, revision
+}
+
+func deployCommitMatchesHead(command, cwd string) bool {
+	if strings.TrimSpace(cwd) == "" || strings.ContainsAny(command, ";&|\n") {
+		return false
+	}
+	fields := strings.Fields(command)
+	if len(fields) > 0 && filepath.Base(fields[0]) == "env" {
+		fields = fields[1:]
+	}
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 || filepath.Base(fields[0]) != "deploy-it" {
+		return false
+	}
+	commit := ""
+	for index := 1; index < len(fields); index++ {
+		if fields[index] == "--commit" && index+1 < len(fields) {
+			commit = fields[index+1]
+			break
+		}
+		if strings.HasPrefix(fields[index], "--commit=") {
+			commit = strings.TrimPrefix(fields[index], "--commit=")
+			break
+		}
+	}
+	if len(commit) != 40 {
+		return false
+	}
+	for _, character := range commit {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
+			return false
+		}
+	}
+	head, err := exec.Command("git", "-C", cwd, "rev-parse", "HEAD").Output()
+	return err == nil && strings.EqualFold(strings.TrimSpace(string(head)), commit)
 }
 
 func hasRecordedActivity(s state) bool {

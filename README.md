@@ -29,7 +29,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
-- Directs the primary agent to run `ship-it` immediately after verified work and to apply matching standing production authorization without asking again. If required delivery is still unresolved, `Stop` returns `decision:block` and continues the active handoff until `ship-it` succeeds (or a later explicit `deploy-it` success resolves a previous `ship-it` failure). The hook process emits guidance and records delivery outcomes; it does not spawn or block delivery commands itself.
+- Directs the primary agent to run `ship-it` immediately after verified work and to apply matching standing production authorization without asking again. If required delivery is still unresolved, `Stop` returns `decision:block` and continues the active handoff until `ship-it` succeeds for the current revision (or a later explicit `deploy-it` success for that same commit resolves its previous `ship-it` failure). The hook process emits guidance and records delivery outcomes; it does not spawn or block delivery commands itself.
 - Makes `status` prefer the latest session with recorded work over a newer empty turn.
 - Exposes human-readable and JSON reports for later comparison.
 
@@ -189,7 +189,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - One session-scoped Spark close review appears only after at least two successful edits without any Spark calls.
 - A verified edited revision is ship-ready. Apply matching standing authorization or the user's explicit acceptance of the target and procedure, implement the tracked contract or procedure, continue through `ship-it` and `deploy-it`, then verify the visible acceptance result.
 - Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent trust, create a deployment command, or self-authorize.
-- A verified edit with unresolved required delivery is not task complete. On `Stop`, the hook returns `decision:block` and continues until `ship-it` and `deploy-it` succeed (including on Stop reentry). Coaching outcomes and score do not replace delivery verification.
+- A verified edit with unresolved required delivery is not task complete. On `Stop`, the hook returns `decision:block` and continues until the current revision is delivered, including on Stop reentry. A later edit requires new delivery evidence. Coaching outcomes and score do not replace delivery verification.
 - Park useful work that is outside the requested goal. Return to it later.
 - Never duplicate ownership between primary and Spark; primary retains architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, integration, and final acceptance.
 - After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.
