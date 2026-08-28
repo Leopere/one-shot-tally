@@ -39,7 +39,7 @@ one-shot-tally help|-h|--help
 - Never assign the same task to both the primary agent and a subagent.
 - Treat coaching as advisory; never trade correctness or delivery for a score.
 - Treat hook evidence honestly: no calls are `NO OBSERVED WORK`; calls without verified revision evidence are `ACTIVITY OBSERVED`; explicit failures are `FAILED`; only a completed current edit followed by an explicit passing standalone check is `VERIFIED`.
-- When wrapping `exec_command`, return its complete machine-readable result, including `exit_code`; do not return only stdout. Never infer success from human-readable output.
+- Codex Bash PostToolUse exposes plain output only, without structured exit-code data. For this repo, one-shot-tally rewrites verification and delivery Bash commands in PreToolUse to capture real exit status in a per-call machine marker. PostToolUse accepts that matching marker or a trusted structured exit result, but never plain output alone, as proof.
 - Do not infer goal completion from tool names, shell text, test output phrases, or the coaching score. The primary agent owns user-visible acceptance.
 - Keep ordinary prompts quiet. Emit prompt guidance only when a correction is detected.
 - Start correction steers politely. Increase directness only after repeated corrections, and reset after a successful edit or passing check.

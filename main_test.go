@@ -103,6 +103,122 @@ func TestDeliveryAndGitCommandsAreNeverDenied(t *testing.T) {
 	}
 }
 
+func TestMarkedCommandPreservesExitStatus(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh"} {
+		for _, test := range []struct {
+			name      string
+			command   string
+			succeeded bool
+		}{
+			{name: "success", command: "printf 'verified\\n'", succeeded: true},
+			{name: "failure", command: "printf 'failed\\n'; false", succeeded: false},
+		} {
+			t.Run(shell+"-errexit-"+test.name, func(t *testing.T) {
+				marker := "0123456789abcdef"
+				raw, _ := json.Marshal(map[string]any{"command": test.command})
+				input := markedCommandInput(raw, test.command, marker)
+				wrapped, ok := input["command"].(string)
+				if !ok || wrapped == test.command {
+					t.Fatalf("command was not wrapped: %#v", input)
+				}
+				output, err := exec.Command(shell, "-lec", wrapped).CombinedOutput()
+				if test.succeeded && err != nil {
+					t.Fatalf("successful command failed: %v %s", err, output)
+				}
+				if !test.succeeded && err == nil {
+					t.Fatalf("failing command returned success: %s", output)
+				}
+				known, succeeded := markedResponseResult(string(output), marker)
+				if !known || succeeded != test.succeeded {
+					t.Fatalf("marked result = (%v, %v), want (true, %v): %q", known, succeeded, test.succeeded, output)
+				}
+			})
+		}
+	}
+}
+
+func TestResultMarkerRewriteIsLimitedToCanonicalBash(t *testing.T) {
+	dir := t.TempDir()
+	for _, tool := range []string{"mcp__custom_shell", "terminal_metadata", "functions.exec_command_proxy"} {
+		out := hook(t, dir, map[string]any{
+			"session_id": "s", "turn_id": "tool-scope", "hook_event_name": "PreToolUse",
+			"tool_name": tool, "tool_use_id": tool, "tool_input": map[string]any{"command": "go test ./..."},
+		})
+		if strings.Contains(string(mustJSON(out)), "updatedInput") {
+			t.Fatalf("non-Bash tool %q was rewritten: %#v", tool, out)
+		}
+	}
+}
+
+func TestStructuredResultRemainsTrustedWhenMarkerIsUnavailable(t *testing.T) {
+	raw := json.RawMessage(`{"exit_code":0,"output":"__ONE_SHOT_TALLY_RESULT_wrong__:9"}`)
+	known, succeeded := explicitResponseResult(raw, "expected")
+	if !known || !succeeded {
+		t.Fatalf("structured exit result lost forward compatibility: known=%v succeeded=%v", known, succeeded)
+	}
+}
+
+func TestPlainBashResponseMarkerRecordsTestAndShipResults(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "plain-response"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+
+	verification := event{SessionID: "s", TurnID: "plain-response", ToolUseID: "test"}
+	preTest := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": verification.ToolUseID, "tool_input": map[string]any{"command": "go test ./..."}})
+	assertMarkedPreToolOutput(t, preTest)
+	testMarker := commandResultMarker(verification)
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": verification.ToolUseID, "tool_response": "ok\n__ONE_SHOT_TALLY_RESULT_" + testMarker + "__:0\n"})
+
+	shipping := event{SessionID: "s", TurnID: "plain-response", ToolUseID: "ship"}
+	preShip := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": shipping.ToolUseID, "tool_input": map[string]any{"command": "ship-it"}})
+	assertMarkedPreToolOutput(t, preShip)
+	shipMarker := commandResultMarker(shipping)
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": shipping.ToolUseID, "tool_response": "Already shipped.\n__ONE_SHOT_TALLY_RESULT_" + shipMarker + "__:0\n"})
+
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	b, _ := os.ReadFile(files[0])
+	var s state
+	_ = json.Unmarshal(b, &s)
+	if s.TestPasses != 1 || !s.LastTestResultKnown || !s.LastTestPassed || s.ShipCompletions != 1 || !s.LastShipResultKnown || !s.LastShipSucceeded {
+		t.Fatalf("plain Bash results were not recorded: %#v", s)
+	}
+}
+
+func TestPlainBashResponseRejectsWrongOrFailingMarker(t *testing.T) {
+	dir := t.TempDir()
+	common := map[string]any{"session_id": "s", "turn_id": "marker-failure"}
+	verification := event{SessionID: "s", TurnID: "marker-failure", ToolUseID: "test"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": verification.ToolUseID, "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": verification.ToolUseID, "tool_response": "__ONE_SHOT_TALLY_RESULT_wrong__:0\n"})
+
+	shipping := event{SessionID: "s", TurnID: "marker-failure", ToolUseID: "ship"}
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": shipping.ToolUseID, "tool_input": map[string]any{"command": "ship-it"}})
+	marker := commandResultMarker(shipping)
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": shipping.ToolUseID, "tool_response": "__ONE_SHOT_TALLY_RESULT_" + marker + "__:7\n"})
+
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	b, _ := os.ReadFile(files[0])
+	var s state
+	_ = json.Unmarshal(b, &s)
+	if s.LastTestResultKnown || !s.LastShipResultKnown || s.LastShipSucceeded {
+		t.Fatalf("marker validation accepted invalid evidence: %#v", s)
+	}
+}
+
+func assertMarkedPreToolOutput(t *testing.T, output map[string]any) {
+	t.Helper()
+	specific, ok := output["hookSpecificOutput"].(map[string]any)
+	if !ok || specific["permissionDecision"] != "allow" {
+		t.Fatalf("missing allow rewrite: %#v", output)
+	}
+	updated, ok := specific["updatedInput"].(map[string]any)
+	command, commandOK := updated["command"].(string)
+	if !ok || !commandOK || !strings.Contains(command, "__ONE_SHOT_TALLY_RESULT_") {
+		t.Fatalf("missing result marker rewrite: %#v", output)
+	}
+}
+
 func TestNoOpTestTokenCannotVerifyRevision(t *testing.T) {
 	dir := t.TempDir()
 	common := map[string]any{"session_id": "s", "turn_id": "fake"}
@@ -651,7 +767,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.13.6", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.13.7", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -744,7 +860,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.13.6 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally 1.13.7 | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}
@@ -1402,8 +1518,10 @@ func TestSuccessfulDeployResolvesEarlierShipFailure(t *testing.T) {
 	if blocked["decision"] != "block" || !strings.Contains(blocked["systemMessage"].(string), "ship-it did not complete") {
 		t.Fatalf("failed ship-it did not continue delivery: %#v", blocked)
 	}
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_input": map[string]any{"command": "deploy-it --commit " + head + " --branch main"}})
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_response": map[string]any{"exit_code": 0}})
+	preDeploy := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_input": map[string]any{"command": "deploy-it --commit " + head + " --branch main"}})
+	assertMarkedPreToolOutput(t, preDeploy)
+	deployMarker := commandResultMarker(event{SessionID: "s", TurnID: "ship-then-deploy", ToolUseID: "deploy"})
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_response": "Deployed.\n__ONE_SHOT_TALLY_RESULT_" + deployMarker + "__:0\n"})
 	done := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
 	if done["decision"] == "block" || !strings.Contains(done["systemMessage"].(string), "shipping and deployment completed") || strings.Contains(done["systemMessage"].(string), "did not complete") {
 		t.Fatalf("successful deploy-it did not resolve earlier ship failure: %#v", done)

@@ -67,6 +67,7 @@ only to improve a score.
 | 1.13.4 | Agents treated target confirmation as a reason to ask for shipping permission even when the user had issued a standing production instruction. | State the evidence-backed target, apply matching standing authorization until revoked, and ship without a per-revision permission prompt. |
 | 1.13.5 | Agents sometimes stalled on or retried GitHub-hosted checks when local runner health was uncertain. | Never rely on GitHub Actions public runners. Use the self-hosted local runner and labels documented in `~/dev/gh-runner`. If that runner stalls or is insufficient, diagnose and repair it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), then test it. GitHub-hosted runner labels are a shipping defect; hard enforcement remains in `ship-it`. |
 | 1.13.6 | Agents treated a failed or unknown delivery result as a reason to end the task. | Preserve the failure, inspect external state, fix the in-scope cause, reverify, and resume the same authorized trusted handoff until visible acceptance passes. Never blindly repeat the failed command. |
+| 1.13.7 | Codex Bash PostToolUse omitted the structured exit code, so successful verification and delivery commands remained unknown. | Wrap verification and delivery commands in PreToolUse, preserve their real exit status in a per-call marker, and accept a matching marker or trusted structured result in PostToolUse. |
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -111,10 +112,12 @@ Use `/hooks` in Codex to review and trust that configuration.
 
 The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
 If bookkeeping fails, the hook reports the error and lets the Codex tool continue.
-Command wrappers must preserve their full machine-readable result, including
-`exit_code`, in the tool response. For `functions.exec`, append the complete
-`exec_command` result (for example, `text(result)`), not only `result.output`.
-The tally deliberately does not infer success from human-readable output.
+Codex Bash PostToolUse currently exposes plain output only, without a structured
+`exit_code`. To keep verification and deployment behavior correct, one-shot-tally
+rewrites Bash commands in PreToolUse to record the real command exit status in a
+per-call machine marker. PostToolUse then accepts a matching marker and
+does not treat plain output alone as proof of success. It continues to accept a
+trusted structured exit result when Codex provides one.
 Goal history uses `$CODEX_HOME/goals_1.sqlite` for named accounts and otherwise `$HOME/.codex/goals_1.sqlite`.
 It requires the `sqlite3` command with JSON output support. The installer checks it.
 

@@ -13,11 +13,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const binaryVersion = "1.13.6"
+const binaryVersion = "1.13.7"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
@@ -86,6 +87,7 @@ type pendingCall struct {
 	Shipping           bool      `json:"shipping,omitempty"`
 	Deploying          bool      `json:"deploying,omitempty"`
 	DeployCommitMatch  bool      `json:"deploy_commit_match,omitempty"`
+	ResultMarker       string    `json:"result_marker,omitempty"`
 	TestEligible       bool      `json:"test_eligible,omitempty"`
 	WorktreeKnown      bool      `json:"worktree_known,omitempty"`
 	WorktreeSnapshot   string    `json:"worktree_snapshot,omitempty"`
@@ -204,8 +206,10 @@ type codexGoal struct {
 }
 
 type hookSpecificOutput struct {
-	HookEventName     string `json:"hookEventName"`
-	AdditionalContext string `json:"additionalContext,omitempty"`
+	HookEventName      string         `json:"hookEventName"`
+	AdditionalContext  string         `json:"additionalContext,omitempty"`
+	PermissionDecision string         `json:"permissionDecision,omitempty"`
+	UpdatedInput       map[string]any `json:"updatedInput,omitempty"`
 }
 
 type hookOutput struct {
@@ -566,13 +570,22 @@ func preToolUse(e event, w io.Writer) error {
 		s.LastProductionResultKnown = false
 		s.LastProductionSucceeded = false
 	}
+	resultMarker := ""
+	var updatedInput map[string]any
+	if e.ToolUseID != "" && canonicalBashTool(e.ToolName) && (isTest || isProduction) {
+		resultMarker = commandResultMarker(e)
+		updatedInput = markedCommandInput(e.ToolInput, command, resultMarker)
+		if updatedInput == nil {
+			resultMarker = ""
+		}
+	}
 	worktreeSnapshot, worktreeKnown := "", false
 	observeCommandWorktree := isCommand && !isRead && !isPassiveWait && !isBackgroundRecord && !isBackgroundComplete && !isTodoAdd && !isTodoDone && !isShipping && !isDeploying && !gitCommitRE.MatchString(command)
 	if s.Revision > 0 && (isEdit || observeCommandWorktree) {
 		worktreeSnapshot, worktreeKnown = gitWorktreeSnapshot(e.CWD)
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, ResultMarker: resultMarker, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
 	}
 	var messages []string
 	if goalChange == "start" {
@@ -618,10 +631,15 @@ func preToolUse(e event, w io.Writer) error {
 			return err
 		}
 	}
-	if len(messages) == 0 {
+	if len(messages) == 0 && updatedInput == nil {
 		return writeJSON(w, hookOutput{})
 	}
-	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}})
+	specific := &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}
+	if updatedInput != nil {
+		specific.PermissionDecision = "allow"
+		specific.UpdatedInput = updatedInput
+	}
+	return writeJSON(w, hookOutput{HookSpecificOutput: specific})
 }
 
 func pacedSteer(occurrence int, gentle, firmer, clear string) string {
@@ -669,7 +687,7 @@ func postToolUse(e event, w io.Writer) error {
 	resultKnown, resultSucceeded := false, false
 	if ok {
 		delete(s.Pending, e.ToolUseID)
-		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse)
+		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse, pending.ResultMarker)
 		if resultKnown && pending.Sequence >= s.LastCallResultSequence {
 			s.LastCallResultKnown = true
 			s.LastCallSucceeded = resultSucceeded
@@ -1290,13 +1308,57 @@ func responsePassed(raw json.RawMessage) bool {
 	return !containsFailure(v)
 }
 
-func explicitResponseResult(raw json.RawMessage) (bool, bool) {
+func commandResultMarker(e event) string {
+	sum := sha256.Sum256([]byte(e.SessionID + "\x00" + e.TurnID + "\x00" + e.ToolUseID))
+	return hex.EncodeToString(sum[:12])
+}
+
+func markedCommandInput(raw json.RawMessage, command, marker string) map[string]any {
+	if strings.TrimSpace(command) == "" || marker == "" {
+		return nil
+	}
+	var input map[string]any
+	if json.Unmarshal(raw, &input) != nil || input == nil {
+		return nil
+	}
+	if _, ok := input["command"].(string); !ok {
+		return nil
+	}
+	input["command"] = fmt.Sprintf("(\ntrap 'one_shot_tally_exit=$?; printf \"\\n__ONE_SHOT_TALLY_RESULT_%s__:%%d\\n\" \"$one_shot_tally_exit\"; exit \"$one_shot_tally_exit\"' 0\n%s\n)", marker, command)
+	return input
+}
+
+func canonicalBashTool(tool string) bool {
+	return strings.EqualFold(strings.TrimSpace(tool), "Bash")
+}
+
+func markedResponseResult(output, marker string) (bool, bool) {
+	if marker == "" {
+		return false, false
+	}
+	prefix := "__ONE_SHOT_TALLY_RESULT_" + marker + "__:"
+	index := strings.LastIndex(output, prefix)
+	if index < 0 {
+		return false, false
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(output[index+len(prefix):]))
+	if err != nil {
+		return false, false
+	}
+	return true, code == 0
+}
+
+func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool) {
 	if len(raw) == 0 {
 		return false, false
 	}
 	var value any
 	if json.Unmarshal(raw, &value) != nil {
 		return false, false
+	}
+	marker := ""
+	if len(markers) > 0 {
+		marker = markers[0]
 	}
 	known, failed := false, false
 	var inspect func(map[string]any, bool)
@@ -1309,6 +1371,11 @@ func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 			}
 		case string:
 			text := strings.TrimSpace(item)
+			if marked, succeeded := markedResponseResult(text, marker); marked {
+				known = true
+				failed = failed || !succeeded
+				return
+			}
 			if text == "" || (text[0] != '{' && text[0] != '[') {
 				return
 			}
