@@ -29,7 +29,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
-- Directs the primary agent to run `ship-it` immediately after verified work and to apply matching standing production authorization without asking again. The hook process emits guidance and records delivery outcomes; it does not spawn delivery commands itself.
+- Directs the primary agent to run `ship-it` immediately after verified work and to apply matching standing production authorization without asking again. If required delivery is still unresolved, `Stop` returns `decision:block` and continues the active handoff until `ship-it` succeeds (or a later explicit `deploy-it` success resolves a previous `ship-it` failure). The hook process emits guidance and records delivery outcomes; it does not spawn or block delivery commands itself.
 - Makes `status` prefer the latest session with recorded work over a newer empty turn.
 - Exposes human-readable and JSON reports for later comparison.
 
@@ -79,7 +79,7 @@ only to improve a score.
 - Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification. Unknown test telemetry never verifies a revision or permits ship-ready status, and by itself no longer forces the coaching score to 25; explicit failures and edits with no test remain penalized.
 - Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
 - Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
-- `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it immediately without merely recommending it, asking for separate commit, push, or shipping permission, or pausing for acknowledgement. A deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
+- `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it immediately without merely recommending it, asking for separate commit, push, or shipping permission, or pausing for acknowledgement. A verified revision is not complete until required delivery succeeds. The deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
 - Do not use GitHub-hosted/public runners for delivery steps that depend on CI behavior. Verify and use the self-hosted local runner from `~/dev/gh-runner` and its documented labels. If the local runner is unavailable or insufficient, diagnose and fix it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), test it, then resume delivery. GitHub-hosted runner labels are a shipping defect.
 - Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. A failed or unresolved delivery is recorded and never blindly repeated. The agent must diagnose it, fix the in-scope cause, reverify, and resume the same authorized trusted handoff.
 - Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
@@ -160,7 +160,7 @@ write to it.
 - The coaching score is advisory. It cannot change the recorded outcome.
 - An unknown test result is treated as missing or inaccessible telemetry: it never verifies a revision, does not permit ship-ready status, and does not force a 25 score by itself; explicit failures and edits with no test remain score-penalized signals.
 
-The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands. It records successful delivery actions as outcome evidence.
+The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands. On `Stop`, if delivery is still required, it returns `decision:block` and continues the same authorized delivery flow until completion. It records successful delivery actions as outcome evidence.
 
 ## Coaching signals
 
@@ -178,8 +178,8 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
 - A successful delivery action earns one capped outcome credit.
 - Command success does not prove service health.
-- A successful `git push`/`ship-it` with deployment skipped is not production completion when production deployment was requested.
-- A failed or unknown delivery result is not a task-completion condition. Preserve its evidence, inspect external state, fix the in-scope cause, rerun affected verification, and resume the same authorized trusted handoff until the visible acceptance result passes. Stop only for missing user authorization or a genuinely blocked external prerequisite.
+- A successful `git push`/`ship-it` with deployment skipped is not production completion when production deployment was requested, and the session remains open until the required delivery path completes.
+- A failed or unknown delivery result is not a task-completion condition. Preserve its evidence, inspect external state, fix the in-scope cause, rerun affected verification, and resume the same authorized trusted handoff until the visible acceptance result passes. On `Stop`, this remains an explicit non-complete state, including on reentry.
 - Deployability is detected by presence of a tracked `.deploy-it.json`; trust and handoff enforcement are performed by `ship-it`/`deploy-it`.
 - A standing user instruction to ship completed changes to production is explicit authorization for later matching revisions through an already-trusted tracked deployment contract until revoked. The agent states the matching target and executes without asking for per-revision permission.
 - If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this once and applies matching standing authorization. Without matching authorization, only the user may authorize a new target or deployment trust. Acceptance is intent, not a magic phrase: clear instructions to deploy, proceed, continue, or keep going until the visible result count. Once accepted, the agent must execute without asking again. The agent must not invent trust or self-authorize.
@@ -189,6 +189,7 @@ The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands.
 - One session-scoped Spark close review appears only after at least two successful edits without any Spark calls.
 - A verified edited revision is ship-ready. Apply matching standing authorization or the user's explicit acceptance of the target and procedure, implement the tracked contract or procedure, continue through `ship-it` and `deploy-it`, then verify the visible acceptance result.
 - Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent trust, create a deployment command, or self-authorize.
+- A verified edit with unresolved required delivery is not task complete. On `Stop`, the hook returns `decision:block` and continues until `ship-it` and `deploy-it` succeed (including on Stop reentry). Coaching outcomes and score do not replace delivery verification.
 - Park useful work that is outside the requested goal. Return to it later.
 - Never duplicate ownership between primary and Spark; primary retains architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, integration, and final acceptance.
 - After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.

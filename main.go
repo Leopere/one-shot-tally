@@ -810,16 +810,28 @@ func stop(e event, w io.Writer) error {
 	if s.BackgroundRecords > s.BackgroundCompletions {
 		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
 	}
-	closure := ""
+	closure := closingLoop(s, deployContract)
 	if !e.StopHookActive && !goalActive {
 		sparkReview, err := claimSparkRoutingReview(e.SessionID, s)
 		if err != nil {
 			return err
 		}
-		closure = closingLoop(s, deployContract) + sparkReview
+		closure += sparkReview
+	}
+	message := line + ". " + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure
+	if requiredDeliveryPending(s) {
+		reason := strings.TrimSpace(closure)
+		if reason == "" {
+			reason = "The verified current revision still requires delivery. Run ship-it now and continue through its tracked deploy-it handoff."
+		}
+		return writeJSON(w, hookOutput{
+			Decision:      "block",
+			Reason:        "Deployment is required and this turn cannot stop yet. " + reason,
+			SystemMessage: message,
+		})
 	}
 	if goalActive || !finalPassed(s) {
-		return writeJSON(w, hookOutput{SystemMessage: line + ". " + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure})
+		return writeJSON(w, hookOutput{SystemMessage: message})
 	}
 	if !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
@@ -834,22 +846,23 @@ func stop(e event, w io.Writer) error {
 }
 
 func closingLoop(s state, deployContract bool) string {
-	if s.LastDeployResultKnown && !s.LastDeploySucceeded {
+	kind, attempted, known, succeeded := latestDeliveryResult(s)
+	if attempted && known && !succeeded && kind == "deploy" {
 		return " Closing loop: deploy-it did not complete. This is not a stopping point. Do not blindly rerun it. Diagnose the preserved failure, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
-	if s.LastShipResultKnown && !s.LastShipSucceeded {
+	if attempted && known && !succeeded && kind == "ship" {
 		return " Closing loop: ship-it did not complete cleanly, and Git may already be shipped. This is not a stopping point. Preserve the failure, inspect Git and deployment state, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Do not blindly repeat the failed command. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
-	if s.DeployAttempts > 0 && !s.LastDeployResultKnown {
+	if attempted && !known && kind == "deploy" {
 		return " Closing loop: deploy-it returned no explicit result. This is not a stopping point. Inspect deployment state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Do not blindly repeat the unresolved command. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
-	if s.ShipAttempts > 0 && !s.LastShipResultKnown {
+	if attempted && !known && kind == "ship" {
 		return " Closing loop: ship-it returned no explicit result, and Git may already be shipped. This is not a stopping point. Inspect repository and deployment state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
-	if s.LastProductionResultKnown && !s.LastProductionSucceeded {
+	if attempted && known && !succeeded {
 		return " Closing loop: the recorded delivery action did not complete. This is not a stopping point. Preserve its failure, inspect external state, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
-	if s.ProductionAttempts > 0 && !s.LastProductionResultKnown {
+	if attempted && !known {
 		return " Closing loop: the recorded delivery action returned no explicit result. This is not a stopping point. Inspect external state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
 	}
 	if s.Revision == 0 {
@@ -980,10 +993,8 @@ func finalPassed(s state) bool {
 }
 
 func recordedOutcome(s state) string {
-	if (s.LastDeployResultKnown && !s.LastDeploySucceeded) || (s.LastShipResultKnown && !s.LastShipSucceeded) {
-		return outcomeFailed
-	}
-	if s.LastProductionResultKnown && !s.LastProductionSucceeded {
+	_, deliveryAttempted, deliveryKnown, deliverySucceeded := latestDeliveryResult(s)
+	if deliveryAttempted && deliveryKnown && !deliverySucceeded {
 		return outcomeFailed
 	}
 	if s.LastEditResultKnown && !s.LastEditSucceeded {
@@ -995,19 +1006,52 @@ func recordedOutcome(s state) string {
 	if s.LastCallResultKnown && !s.LastCallSucceeded {
 		return outcomeFailed
 	}
-	if (s.DeployAttempts > 0 && !s.LastDeployResultKnown) || (s.ShipAttempts > 0 && !s.LastShipResultKnown) {
+	if deliveryAttempted && !deliveryKnown {
 		return outcomeActivity
 	}
-	if s.ProductionAttempts > 0 && !s.LastProductionResultKnown {
-		return outcomeActivity
-	}
-	if currentEditReady(s) && s.LastTestResultKnown && s.LastTestPassed && s.VerifiedRevision == s.Revision {
+	if verifiedCurrentRevision(s) {
 		return outcomeVerified
 	}
 	if !hasRecordedActivity(s) {
 		return outcomeNoWork
 	}
 	return outcomeActivity
+}
+
+func verifiedCurrentRevision(s state) bool {
+	return currentEditReady(s) && s.LastTestResultKnown && s.LastTestPassed && s.VerifiedRevision == s.Revision
+}
+
+func requiredDeliveryPending(s state) bool {
+	if !verifiedCurrentRevision(s) {
+		return false
+	}
+	latestKind, attempted, known, succeeded := latestDeliveryResult(s)
+	if !attempted || !known || !succeeded {
+		return true
+	}
+	if latestKind == "ship" {
+		return false
+	}
+	return latestKind != "deploy" || s.ShipAttempts == 0
+}
+
+func latestDeliveryResult(s state) (kind string, attempted, known, succeeded bool) {
+	sequence := -1
+	consider := func(candidateKind string, attempts, candidateSequence int, candidateKnown, candidateSucceeded bool) {
+		if attempts == 0 || candidateSequence < sequence {
+			return
+		}
+		kind = candidateKind
+		attempted = true
+		known = candidateKnown
+		succeeded = candidateKnown && candidateSucceeded
+		sequence = candidateSequence
+	}
+	consider("production", s.ProductionAttempts, s.LastProductionResultSequence, s.LastProductionResultKnown, s.LastProductionSucceeded)
+	consider("ship", s.ShipAttempts, s.LastShipResultSequence, s.LastShipResultKnown, s.LastShipSucceeded)
+	consider("deploy", s.DeployAttempts, s.LastDeployResultSequence, s.LastDeployResultKnown, s.LastDeploySucceeded)
+	return kind, attempted, known, succeeded
 }
 
 func hasRecordedActivity(s state) bool {
