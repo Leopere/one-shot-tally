@@ -343,7 +343,7 @@ func TestGoalModeDoesNotScoreToolVolume(t *testing.T) {
 	}
 }
 
-func TestVerifiedStopBlocksUntilShipItSucceeds(t *testing.T) {
+func TestVerifiedStopBlocksOnceUntilShipItSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "e", "tool_input": map[string]any{"command": "patch"}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "e", "tool_response": map[string]any{"exit_code": 0}})
@@ -354,8 +354,8 @@ func TestVerifiedStopBlocksUntilShipItSucceeds(t *testing.T) {
 		t.Fatalf("unexpected stop output: %#v", out)
 	}
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
-	if out["decision"] != "block" || !strings.Contains(out["systemMessage"].(string), "Closing loop:") {
-		t.Fatalf("stop reentry escaped required delivery: %#v", out)
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Closing loop:") || !strings.Contains(out["systemMessage"].(string), "Stop continuation already used") {
+		t.Fatalf("stop reentry was not capped with delivery guidance: %#v", out)
 	}
 	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("premature stop recorded lifetime success: %v", err)
@@ -375,6 +375,27 @@ func TestVerifiedStopBlocksUntilShipItSucceeds(t *testing.T) {
 	}
 }
 
+func TestUnknownDeliveryStopBlocksOnlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
+
+	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "Stop"})
+	if out["decision"] != "block" || !strings.Contains(out["systemMessage"].(string), "returned no explicit result") {
+		t.Fatalf("first unresolved delivery stop did not block: %#v", out)
+	}
+	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "Stop", "stop_hook_active": true})
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "returned no explicit result") || !strings.Contains(out["systemMessage"].(string), "Stop continuation already used") {
+		t.Fatalf("unknown delivery stop reentry was not capped: %#v", out)
+	}
+	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unresolved delivery recorded lifetime success: %v", err)
+	}
+}
+
 func TestUnverifiedStopAdvisesThenVerifiedStopRequiresDelivery(t *testing.T) {
 	dir := t.TempDir()
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
@@ -389,7 +410,7 @@ func TestUnverifiedStopAdvisesThenVerifiedStopRequiresDelivery(t *testing.T) {
 	}
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
-	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
+	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "last_assistant_message": "Done"})
 	if out["decision"] != "block" || !strings.Contains(out["reason"].(string), "Deployment is required") {
 		t.Fatalf("verified continuation escaped required delivery: %#v", out)
 	}
@@ -767,7 +788,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.13.6", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.13.7", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -860,7 +881,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.13.6 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally 1.13.7 | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}
@@ -1447,8 +1468,13 @@ func TestFailedShipOrDeployRequiresDiagnosisBeforeResuming(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "delivery", "tool_response": map[string]any{"exit_code": 1}})
 			out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
 			message := out["systemMessage"].(string)
-			if !strings.Contains(message, "did not complete") || !strings.Contains(message, "not a stopping point") || !strings.Contains(message, "fix the in-scope cause") || !strings.Contains(message, "resume the same authorized trusted handoff") || !strings.Contains(message, "Stop only for missing user authorization") || strings.Contains(message, "Run ship-it") {
+			if out["decision"] != "block" || !strings.Contains(message, "did not complete") || !strings.Contains(message, "not a stopping point") || !strings.Contains(message, "fix the in-scope cause") || !strings.Contains(message, "resume the same authorized trusted handoff") || !strings.Contains(message, "Stop only for missing user authorization") || strings.Contains(message, "Run ship-it") {
 				t.Fatalf("failed delivery did not require diagnosis before resuming: %#v", out)
+			}
+			out = hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
+			message = out["systemMessage"].(string)
+			if out["decision"] == "block" || !strings.Contains(message, "did not complete") || !strings.Contains(message, "Stop continuation already used") {
+				t.Fatalf("failed delivery stop reentry was not capped: %#v", out)
 			}
 		})
 	}
@@ -1514,7 +1540,7 @@ func TestSuccessfulDeployResolvesEarlierShipFailure(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 1}})
-	blocked := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
+	blocked := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
 	if blocked["decision"] != "block" || !strings.Contains(blocked["systemMessage"].(string), "ship-it did not complete") {
 		t.Fatalf("failed ship-it did not continue delivery: %#v", blocked)
 	}
@@ -1541,7 +1567,7 @@ func TestLaterVerifiedEditRequiresNewShip(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
 		}
 	}
-	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
+	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
 	if out["decision"] != "block" || !strings.Contains(out["systemMessage"].(string), "verified changes are ship-ready") {
 		t.Fatalf("later verified edit inherited older delivery: %#v", out)
 	}
@@ -1558,7 +1584,7 @@ func TestFailedShipCorrectiveEditStillBlocksBeforeReverification(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 1}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "fix", "tool_input": map[string]any{"patch": "fix"}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "fix", "tool_response": map[string]any{"exit_code": 0}})
-	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
+	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
 	if out["decision"] != "block" || !strings.Contains(out["systemMessage"].(string), "ship-it did not complete") {
 		t.Fatalf("corrective edit escaped unresolved delivery: %#v", out)
 	}

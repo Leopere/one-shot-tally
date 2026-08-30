@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.13.6"
+const binaryVersion = "1.13.7"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
@@ -849,7 +849,11 @@ func stop(e event, w io.Writer) error {
 		closure += sparkReview
 	}
 	message := line + ". " + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure
-	if requiredDeliveryPending(s) {
+	deliveryPending := requiredDeliveryPending(s)
+	if deliveryPending && e.StopHookActive {
+		message += " Stop continuation already used: required delivery remains unresolved, but this hook will not block the same Stop again."
+	}
+	if deliveryPending && !e.StopHookActive {
 		reason := strings.TrimSpace(closure)
 		if reason == "" {
 			reason = "The verified current revision still requires delivery. Run ship-it now and continue through its tracked deploy-it handoff."
@@ -860,7 +864,7 @@ func stop(e event, w io.Writer) error {
 			SystemMessage: message,
 		})
 	}
-	if goalActive || !finalPassed(s) {
+	if deliveryPending || goalActive || !finalPassed(s) {
 		return writeJSON(w, hookOutput{SystemMessage: message})
 	}
 	if !s.RecordedInLifetime {
