@@ -737,11 +737,8 @@ func submitCredentialSSH(wire []byte, operationID string) error {
 		return &credentialTransportError{state: "failed", reason: "local_transport_unavailable", message: "SSH transport is unavailable; no delivery was attempted", code: 1}
 	}
 	privateKey, knownHosts, args := credentialSSHArguments(home)
-	if err := requirePrivateRegularFile(privateKey); err != nil {
-		return &credentialTransportError{state: "failed", reason: "local_transport_unavailable", message: "dedicated credential transport key is unavailable or has unsafe permissions; no delivery was attempted", code: 1}
-	}
-	if err := requireRegularFile(knownHosts); err != nil {
-		return &credentialTransportError{state: "failed", reason: "local_transport_unavailable", message: "SSH known-hosts trust is unavailable; no delivery was attempted", code: 1}
+	if err := validateCredentialSSHFiles(privateKey, knownHosts); err != nil {
+		return &credentialTransportError{state: "failed", reason: "local_transport_unavailable", message: "dedicated credential SSH files are unavailable or unsafe; no delivery was attempted", code: 1}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), credentialTransportTimeout)
 	defer cancel()
@@ -778,6 +775,8 @@ func credentialSSHArguments(home string) (string, string, []string) {
 	knownHosts := filepath.Join(home, ".ssh", "known_hosts")
 	return privateKey, knownHosts, []string{
 		"-F", "/dev/null", "-T", "-oBatchMode=yes", "-oIdentitiesOnly=yes", "-oIdentityAgent=none",
+		"-oPreferredAuthentications=publickey", "-oPubkeyAuthentication=yes",
+		"-oPasswordAuthentication=no", "-oKbdInteractiveAuthentication=no", "-oCertificateFile=none",
 		"-oStrictHostKeyChecking=yes", "-oUserKnownHostsFile=" + knownHosts,
 		"-oGlobalKnownHostsFile=/dev/null", "-oHostKeyAlias=" + credentialSSHHostKeyAlias,
 		"-oConnectTimeout=10", "-oConnectionAttempts=1", "-oClearAllForwardings=yes",
@@ -786,6 +785,18 @@ func credentialSSHArguments(home string) (string, string, []string) {
 		credentialSSHUser + "@" + credentialSSHHost,
 		"/usr/local/bin/one-shot-tally credential receive",
 	}
+}
+
+func validateCredentialSSHFiles(privateKey, knownHosts string) error {
+	if err := requirePrivateRegularFile(privateKey); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(privateKey + "-cert.pub"); err == nil {
+		return errors.New("companion SSH certificate is not allowed")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return requireRegularFile(knownHosts)
 }
 
 func credentialSendmailArguments() []string {

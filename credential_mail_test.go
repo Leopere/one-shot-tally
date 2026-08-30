@@ -412,6 +412,8 @@ func TestCredentialTransportArgumentsAreFixed(t *testing.T) {
 	}
 	wantSSH := []string{
 		"-F", "/dev/null", "-T", "-oBatchMode=yes", "-oIdentitiesOnly=yes", "-oIdentityAgent=none",
+		"-oPreferredAuthentications=publickey", "-oPubkeyAuthentication=yes",
+		"-oPasswordAuthentication=no", "-oKbdInteractiveAuthentication=no", "-oCertificateFile=none",
 		"-oStrictHostKeyChecking=yes", "-oUserKnownHostsFile=/fixture/home/.ssh/known_hosts",
 		"-oGlobalKnownHostsFile=/dev/null", "-oHostKeyAlias=89.117.56.210",
 		"-oConnectTimeout=10", "-oConnectionAttempts=1", "-oClearAllForwardings=yes",
@@ -437,6 +439,27 @@ func TestCredentialTransportArgumentsAreFixed(t *testing.T) {
 	}
 	if got := credentialGPGArguments("/fixture/home"); !reflect.DeepEqual(got, wantGPG) {
 		t.Fatalf("GnuPG args = %#v, want %#v", got, wantGPG)
+	}
+}
+
+func TestCredentialTransportRejectsCompanionCertificate(t *testing.T) {
+	dir := t.TempDir()
+	privateKey := filepath.Join(dir, "credential-mail_ed25519")
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(privateKey, []byte("fixture-private-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(knownHosts, []byte("fixture-known-host"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCredentialSSHFiles(privateKey, knownHosts); err != nil {
+		t.Fatalf("safe SSH files rejected: %v", err)
+	}
+	if err := os.WriteFile(privateKey+"-cert.pub", []byte("fixture-certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCredentialSSHFiles(privateKey, knownHosts); err == nil || !strings.Contains(err.Error(), "companion SSH certificate") {
+		t.Fatalf("companion certificate error = %v", err)
 	}
 }
 
