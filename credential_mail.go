@@ -38,6 +38,7 @@ const (
 	credentialEncryptionKeyID    = uint64(0xEA43219BE7B419F1)
 	credentialGPGBinary          = "/opt/homebrew/bin/gpg"
 	credentialSSHHost            = "box.p.nixc.us"
+	credentialSSHHostKeyAlias    = "89.117.56.210"
 	credentialSSHUser            = "root"
 	credentialReceiverStateDir   = "/var/lib/one-shot-tally-openpgp-mail"
 	credentialPlaintextLimit     = 64 * 1024
@@ -776,9 +777,12 @@ func credentialSSHArguments(home string) (string, string, []string) {
 	privateKey := filepath.Join(home, ".config", "one-shot-tally", credentialPrivateKeyFilename)
 	knownHosts := filepath.Join(home, ".ssh", "known_hosts")
 	return privateKey, knownHosts, []string{
-		"-T", "-oBatchMode=yes", "-oIdentitiesOnly=yes", "-oStrictHostKeyChecking=yes",
-		"-oUserKnownHostsFile=" + knownHosts, "-oConnectTimeout=10", "-oConnectionAttempts=1",
-		"-oClearAllForwardings=yes", "-oPermitLocalCommand=no", "-i", privateKey,
+		"-F", "/dev/null", "-T", "-oBatchMode=yes", "-oIdentitiesOnly=yes", "-oIdentityAgent=none",
+		"-oStrictHostKeyChecking=yes", "-oUserKnownHostsFile=" + knownHosts,
+		"-oGlobalKnownHostsFile=/dev/null", "-oHostKeyAlias=" + credentialSSHHostKeyAlias,
+		"-oConnectTimeout=10", "-oConnectionAttempts=1", "-oClearAllForwardings=yes",
+		"-oPermitLocalCommand=no", "-oControlMaster=no", "-oControlPath=none", "-oControlPersist=no",
+		"-i", privateKey,
 		credentialSSHUser + "@" + credentialSSHHost,
 		"/usr/local/bin/one-shot-tally credential receive",
 	}

@@ -411,9 +411,12 @@ func TestCredentialTransportArgumentsAreFixed(t *testing.T) {
 		t.Fatalf("unexpected SSH paths: private=%q known_hosts=%q", privateKey, knownHosts)
 	}
 	wantSSH := []string{
-		"-T", "-oBatchMode=yes", "-oIdentitiesOnly=yes", "-oStrictHostKeyChecking=yes",
-		"-oUserKnownHostsFile=/fixture/home/.ssh/known_hosts", "-oConnectTimeout=10", "-oConnectionAttempts=1",
-		"-oClearAllForwardings=yes", "-oPermitLocalCommand=no", "-i", privateKey,
+		"-F", "/dev/null", "-T", "-oBatchMode=yes", "-oIdentitiesOnly=yes", "-oIdentityAgent=none",
+		"-oStrictHostKeyChecking=yes", "-oUserKnownHostsFile=/fixture/home/.ssh/known_hosts",
+		"-oGlobalKnownHostsFile=/dev/null", "-oHostKeyAlias=89.117.56.210",
+		"-oConnectTimeout=10", "-oConnectionAttempts=1", "-oClearAllForwardings=yes",
+		"-oPermitLocalCommand=no", "-oControlMaster=no", "-oControlPath=none", "-oControlPersist=no",
+		"-i", privateKey,
 		"root@box.p.nixc.us", "/usr/local/bin/one-shot-tally credential receive",
 	}
 	if !reflect.DeepEqual(sshArgs, wantSSH) {

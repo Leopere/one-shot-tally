@@ -88,7 +88,9 @@ certificate for `colin.knapp@boompay.ca`, primary fingerprint
 `41E32DA5C148003B2610C5DCA607C103D75F7E39`. The result is the combined
 signed-and-encrypted form allowed by RFC 3156. The command submits only the
 PGP/MIME ciphertext through a dedicated SSH key whose server-side forced
-command can send only from `colin@nixc.us` to `colin.knapp@boompay.ca`.
+command can send only from `colin@nixc.us` to `colin.knapp@boompay.ca`. The
+client ignores user SSH configuration and disables agents and shared
+connections so that the dedicated key's restrictions are always evaluated.
 
 Local receipts record the operation ID, account references, destination,
 ciphertext hash and size, signing and encryption fingerprints, and outcome.
