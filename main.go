@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.14.0"
+const binaryVersion = "1.15.0"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
@@ -254,7 +254,7 @@ func main() {
 			printHelp(os.Stdout)
 			return
 		default:
-			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|todo <add|list|done>|goal <list|show|resume>|credential <send|receive>|version|help]"))
+			fatal(fmt.Errorf("usage: one-shot-tally [status [--json]|grade [--json]|background <record|complete|list>|todo <add|list|done>|goal <list|show|resume>|credential <key-check|send|receive>|version|help]"))
 		}
 	}
 	runHookFailOpen(os.Stdin, os.Stdout, os.Stderr)
@@ -290,8 +290,10 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally goal list [--all] list resumable goals, or all goals")
 	fmt.Fprintln(w, "  one-shot-tally goal show ID      print a previous goal")
 	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the exact create_goal handoff")
+	fmt.Fprintln(w, "  one-shot-tally credential key-check")
+	fmt.Fprintln(w, "                                  verify the DNSSEC Secure RFC 7929 recipient key")
 	fmt.Fprintln(w, "  one-shot-tally credential send --operation-id UUID --account REF")
-	fmt.Fprintln(w, "                                  sign, encrypt, and send stdin to colin.knapp@boompay.ca")
+	fmt.Fprintln(w, "                                  fetch the key, then sign, encrypt, and send stdin")
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)

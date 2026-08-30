@@ -775,12 +775,12 @@ func TestSparkCallsAreDiscounted(t *testing.T) {
 func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 	var out bytes.Buffer
 	printHelp(&out)
-	for _, want := range []string{"status [--json]", "goal list [--all]", "goal show ID", "goal resume ID", "score as advisory"} {
+	for _, want := range []string{"status [--json]", "goal list [--all]", "goal show ID", "goal resume ID", "credential key-check", "score as advisory"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
 		}
 	}
-	if strings.Count(out.String(), "Guidance:") != 1 || len(out.String()) > 1800 {
+	if strings.Count(out.String(), "Guidance:") != 1 || len(out.String()) > 2000 {
 		t.Fatalf("help policy is too verbose: %d bytes", len(out.String()))
 	}
 }
@@ -788,7 +788,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.14.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.15.0", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -881,7 +881,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.14.0 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally 1.15.0 | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}

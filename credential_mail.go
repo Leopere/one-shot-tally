@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +14,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"net/mail"
 	"os"
 	"os/exec"
@@ -27,6 +27,8 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
+	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -35,7 +37,8 @@ const (
 	credentialSubject            = "OpenPGP credential delivery"
 	credentialFingerprint        = "41E32DA5C148003B2610C5DCA607C103D75F7E39"
 	credentialSigningFingerprint = "33EA65A9C078126556C150E1EA43219BE7B419F1"
-	credentialEncryptionKeyID    = uint64(0xEA43219BE7B419F1)
+	credentialEncryptionKeyID    = uint64(0xA607C103D75F7E39)
+	credentialDoHURL             = "https://cloudflare-dns.com/dns-query"
 	credentialGPGBinary          = "/opt/homebrew/bin/gpg"
 	credentialSSHHost            = "box.p.nixc.us"
 	credentialSSHHostKeyAlias    = "89.117.56.210"
@@ -45,17 +48,21 @@ const (
 	credentialWireLimit          = 256 * 1024
 	credentialReceiptLimit       = 32 * 1024
 	credentialTransportTimeout   = 30 * time.Second
-	credentialChannel            = "openpgp-pgp-mime-signed-encrypted-ssh"
+	credentialDNSLookupTimeout   = 10 * time.Second
+	credentialDNSMessageLimit    = 65535
+	credentialDNSCacheMaxTTL     = 24 * time.Hour
+	credentialDNSFailureCacheTTL = 5 * time.Minute
+	credentialChannel            = "openpgp-rfc7929-dnssec-pgp-mime-signed-encrypted-ssh"
 	credentialPrivateKeyFilename = "credential-mail_ed25519"
+	credentialDNSCacheFilename   = "rfc7929-openpgpkey-cache.json"
+	credentialOPENPGPKEYType     = dnsmessage.Type(61)
+	credentialDNSCacheVersion    = 1
 )
 
 var (
 	credentialOperationIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	credentialAccountRE     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._:/+~-]{0,127}$`)
 )
-
-//go:embed openpgp-recipient.asc
-var credentialRecipientCertificate string
 
 type credentialReceipt struct {
 	OperationID        string    `json:"operation_id"`
@@ -111,6 +118,22 @@ type credentialMessageMetadata struct {
 	Hash        string
 }
 
+type credentialDNSKey struct {
+	Certificate []byte
+	TTL         uint32
+}
+
+type credentialDNSCache struct {
+	Version         int       `json:"version"`
+	OwnerName       string    `json:"owner_name"`
+	State           string    `json:"state"`
+	KeyFingerprint  string    `json:"key_fingerprint"`
+	EncryptionKeyID string    `json:"encryption_key_id"`
+	Certificate     string    `json:"certificate,omitempty"`
+	CachedAt        time.Time `json:"cached_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+}
+
 type credentialAccounts []string
 
 func (a *credentialAccounts) String() string { return strings.Join(*a, ",") }
@@ -128,9 +151,11 @@ func (a *credentialAccounts) Set(value string) error {
 
 func credentialCommand(args []string, r io.Reader, w io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: one-shot-tally credential <send|receive>")
+		return errors.New("usage: one-shot-tally credential <key-check|send|receive>")
 	}
 	switch args[0] {
+	case "key-check":
+		return credentialKeyCheck(args[1:], w, time.Now, refreshCredentialRecipientRFC7929)
 	case "send":
 		return credentialSend(args[1:], r, w, credentialSendDependencies{
 			now:        time.Now,
@@ -147,8 +172,29 @@ func credentialCommand(args []string, r io.Reader, w io.Writer) error {
 			deliver: deliverCredentialSendmail,
 		})
 	default:
-		return errors.New("usage: one-shot-tally credential <send|receive>")
+		return errors.New("usage: one-shot-tally credential <key-check|send|receive>")
 	}
+}
+
+func credentialKeyCheck(args []string, w io.Writer, now func() time.Time, resolve func(time.Time) ([]byte, error)) error {
+	if len(args) != 0 {
+		return errors.New("usage: one-shot-tally credential key-check")
+	}
+	checkTime := now().UTC()
+	certificate, err := resolve(checkTime)
+	if err != nil {
+		return fmt.Errorf("RFC 7929 key check failed: %w", err)
+	}
+	name, err := credentialOPENPGPKEYName(credentialRecipient)
+	if err != nil {
+		return err
+	}
+	if _, err := credentialRecipientEntity(checkTime, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionKeyID); err != nil {
+		return fmt.Errorf("RFC 7929 key check failed: %w", err)
+	}
+	fmt.Fprintf(w, "DNSSEC Secure RFC 7929 OPENPGPKEY %s\n", name)
+	fmt.Fprintf(w, "recipient %s; fingerprint %s; encryption key %016X\n", credentialRecipient, credentialFingerprint, credentialEncryptionKeyID)
+	return nil
 }
 
 func credentialSend(args []string, r io.Reader, w io.Writer, deps credentialSendDependencies) error {
@@ -364,8 +410,369 @@ func buildCredentialInnerEntity(plaintext []byte) ([]byte, error) {
 	return entity, nil
 }
 
-func credentialRecipientEntity(now time.Time, certificate, fingerprint, signingFingerprint, recipient string, encryptionKeyID uint64) (*openpgp.Entity, error) {
-	entities, err := openpgp.ReadArmoredKeyRing(strings.NewReader(certificate))
+type credentialHTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+func credentialOPENPGPKEYName(address string) (string, error) {
+	if address == "" || address != strings.TrimSpace(address) || strings.Count(address, "@") != 1 {
+		return "", errors.New("RFC 7929 recipient address is invalid")
+	}
+	at := strings.LastIndexByte(address, '@')
+	localPart, domain := address[:at], address[at+1:]
+	if localPart == "" || domain == "" || !utf8.ValidString(localPart) {
+		return "", errors.New("RFC 7929 recipient address is invalid")
+	}
+	if strings.ContainsAny(localPart, "\"\\() \t\r\n") {
+		return "", errors.New("RFC 7929 recipient local-part requires unsupported canonicalization")
+	}
+	hash := sha256.Sum256([]byte(localPart))
+	name := hex.EncodeToString(hash[:28]) + "._openpgpkey." + strings.ToLower(strings.TrimSuffix(domain, ".")) + "."
+	if _, err := dnsmessage.NewName(name); err != nil {
+		return "", errors.New("RFC 7929 OPENPGPKEY owner name is invalid")
+	}
+	return name, nil
+}
+
+func resolveCredentialRecipientRFC7929(now time.Time) ([]byte, error) {
+	return resolveCredentialRecipientRFC7929Cached(now, false, lookupCredentialRecipientRFC7929)
+}
+
+func refreshCredentialRecipientRFC7929(now time.Time) ([]byte, error) {
+	return resolveCredentialRecipientRFC7929Cached(now, true, lookupCredentialRecipientRFC7929)
+}
+
+func lookupCredentialRecipientRFC7929(now time.Time) (credentialDNSKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), credentialDNSLookupTimeout)
+	defer cancel()
+	client := &http.Client{
+		Timeout: credentialDNSLookupTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("RFC 7929 resolver redirects are not allowed")
+		},
+	}
+	return fetchCredentialRecipientRFC7929(ctx, client, credentialDoHURL, now)
+}
+
+func resolveCredentialRecipientRFC7929Cached(now time.Time, refresh bool, fetch func(time.Time) (credentialDNSKey, error)) ([]byte, error) {
+	cachePath, err := credentialDNSCachePath()
+	if err != nil {
+		return nil, fmt.Errorf("prepare RFC 7929 key cache: %w", err)
+	}
+	unlock, err := lockCredentialDNSCache(cachePath)
+	if err != nil {
+		return nil, fmt.Errorf("lock RFC 7929 key cache: %w", err)
+	}
+	defer func() { _ = unlock() }()
+	ownerName, err := credentialOPENPGPKEYName(credentialRecipient)
+	if err != nil {
+		return nil, err
+	}
+	if !refresh {
+		cache, found, err := loadCredentialDNSCache(cachePath)
+		if err != nil {
+			return nil, fmt.Errorf("read RFC 7929 key cache: %w", err)
+		}
+		if found && credentialDNSCacheMatches(cache, ownerName) && !now.Before(cache.CachedAt) && now.Before(cache.ExpiresAt) {
+			switch cache.State {
+			case "secure":
+				certificate, err := base64.StdEncoding.DecodeString(cache.Certificate)
+				if err != nil {
+					return nil, errors.New("RFC 7929 key cache is invalid; run credential key-check")
+				}
+				if _, err := credentialRecipientEntity(now, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionKeyID); err != nil {
+					return nil, errors.New("RFC 7929 key cache is invalid; run credential key-check")
+				}
+				return certificate, nil
+			case "failure":
+				return nil, fmt.Errorf("RFC 7929 lookup is suppressed after a recent failure until %s; run credential key-check to refresh now", cache.ExpiresAt.UTC().Format(time.RFC3339))
+			}
+		}
+	}
+	result, lookupErr := fetch(now)
+	if lookupErr != nil {
+		if err := saveCredentialDNSFailure(cachePath, ownerName, now); err != nil {
+			return nil, fmt.Errorf("%w; could not persist RFC 7929 failure cache: %v", lookupErr, err)
+		}
+		return nil, lookupErr
+	}
+	if result.TTL == 0 {
+		lookupErr = errors.New("DNSSEC Secure RFC 7929 answer has a zero TTL and cannot be cached safely")
+		if err := saveCredentialDNSFailure(cachePath, ownerName, now); err != nil {
+			return nil, fmt.Errorf("%w; could not persist RFC 7929 failure cache: %v", lookupErr, err)
+		}
+		return nil, lookupErr
+	}
+	if _, err := credentialRecipientEntity(now, result.Certificate, credentialFingerprint, credentialRecipient, credentialEncryptionKeyID); err != nil {
+		lookupErr = errors.New("DNSSEC Secure RFC 7929 answer lacks the pinned recipient key")
+		if saveErr := saveCredentialDNSFailure(cachePath, ownerName, now); saveErr != nil {
+			return nil, fmt.Errorf("%w; could not persist RFC 7929 failure cache: %v", lookupErr, saveErr)
+		}
+		return nil, lookupErr
+	}
+	ttl := time.Duration(result.TTL) * time.Second
+	if ttl > credentialDNSCacheMaxTTL {
+		ttl = credentialDNSCacheMaxTTL
+	}
+	cache := newCredentialDNSCache(ownerName, "secure", result.Certificate, now, now.Add(ttl))
+	if err := saveCredentialDNSCache(cachePath, cache); err != nil {
+		return nil, fmt.Errorf("persist DNSSEC Secure RFC 7929 key cache: %w", err)
+	}
+	return append([]byte(nil), result.Certificate...), nil
+}
+
+func credentialDNSCachePath() (string, error) {
+	dir, err := credentialLocalReceiptDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, credentialDNSCacheFilename), nil
+}
+
+func newCredentialDNSCache(ownerName, state string, certificate []byte, cachedAt, expiresAt time.Time) credentialDNSCache {
+	return credentialDNSCache{
+		Version:         credentialDNSCacheVersion,
+		OwnerName:       ownerName,
+		State:           state,
+		KeyFingerprint:  credentialFingerprint,
+		EncryptionKeyID: fmt.Sprintf("%016X", credentialEncryptionKeyID),
+		Certificate:     base64.StdEncoding.EncodeToString(certificate),
+		CachedAt:        cachedAt.UTC(),
+		ExpiresAt:       expiresAt.UTC(),
+	}
+}
+
+func credentialDNSCacheMatches(cache credentialDNSCache, ownerName string) bool {
+	if cache.Version != credentialDNSCacheVersion || cache.OwnerName != ownerName || cache.KeyFingerprint != credentialFingerprint || cache.EncryptionKeyID != fmt.Sprintf("%016X", credentialEncryptionKeyID) {
+		return false
+	}
+	lifetime := cache.ExpiresAt.Sub(cache.CachedAt)
+	if lifetime <= 0 {
+		return false
+	}
+	switch cache.State {
+	case "secure":
+		return cache.Certificate != "" && lifetime <= credentialDNSCacheMaxTTL
+	case "failure":
+		return cache.Certificate == "" && lifetime <= credentialDNSFailureCacheTTL
+	default:
+		return false
+	}
+}
+
+func saveCredentialDNSFailure(path, ownerName string, now time.Time) error {
+	cache := newCredentialDNSCache(ownerName, "failure", nil, now, now.Add(credentialDNSFailureCacheTTL))
+	return saveCredentialDNSCache(path, cache)
+}
+
+func lockCredentialDNSCache(path string) (func() error, error) {
+	lockPath := path + ".lock"
+	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), lockPath)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("open cache lock")
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		_ = file.Close()
+		return nil, errors.New("cache lock is not a private regular file")
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return func() error {
+		unlockErr := unix.Flock(fd, unix.LOCK_UN)
+		closeErr := file.Close()
+		if unlockErr != nil {
+			return unlockErr
+		}
+		return closeErr
+	}, nil
+}
+
+func loadCredentialDNSCache(path string) (credentialDNSCache, bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return credentialDNSCache{}, false, nil
+	}
+	if err != nil {
+		return credentialDNSCache{}, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return credentialDNSCache{}, false, errors.New("cache is not a private regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return credentialDNSCache{}, false, err
+	}
+	defer file.Close()
+	b, err := io.ReadAll(io.LimitReader(file, credentialReceiptLimit+1))
+	if err != nil || len(b) == 0 || len(b) > credentialReceiptLimit {
+		return credentialDNSCache{}, false, errors.New("cache is invalid")
+	}
+	var cache credentialDNSCache
+	if err := json.Unmarshal(b, &cache); err != nil {
+		return credentialDNSCache{}, false, errors.New("cache is invalid")
+	}
+	return cache, true, nil
+}
+
+func saveCredentialDNSCache(path string, cache credentialDNSCache) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("cache target is not a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	b, err := json.Marshal(cache)
+	if err != nil || len(b) > credentialReceiptLimit {
+		return errors.New("cache is invalid")
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".rfc7929-cache-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(b); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func fetchCredentialRecipientRFC7929(ctx context.Context, client credentialHTTPDoer, endpoint string, now time.Time) (credentialDNSKey, error) {
+	name, err := credentialOPENPGPKEYName(credentialRecipient)
+	if err != nil {
+		return credentialDNSKey{}, err
+	}
+	queryName, err := dnsmessage.NewName(name)
+	if err != nil {
+		return credentialDNSKey{}, errors.New("RFC 7929 OPENPGPKEY owner name is invalid")
+	}
+	rootName, err := dnsmessage.NewName(".")
+	if err != nil {
+		return credentialDNSKey{}, errors.New("DNS root name is invalid")
+	}
+	question := dnsmessage.Question{Name: queryName, Type: credentialOPENPGPKEYType, Class: dnsmessage.ClassINET}
+	query := dnsmessage.Message{
+		Header:    dnsmessage.Header{RecursionDesired: true},
+		Questions: []dnsmessage.Question{question},
+		Additionals: []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: rootName, Type: dnsmessage.TypeOPT, Class: 1232, TTL: 1 << 15},
+			Body:   &dnsmessage.OPTResource{},
+		}},
+	}
+	wire, err := query.Pack()
+	if err != nil {
+		return credentialDNSKey{}, errors.New("build RFC 7929 DNS query")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(wire))
+	if err != nil {
+		return credentialDNSKey{}, errors.New("build RFC 7929 DNS-over-HTTPS request")
+	}
+	request.Header.Set("Accept", "application/dns-message")
+	request.Header.Set("Content-Type", "application/dns-message")
+	response, err := client.Do(request)
+	if err != nil {
+		return credentialDNSKey{}, fmt.Errorf("RFC 7929 DNS-over-HTTPS lookup failed: %w", err)
+	}
+	if response == nil || response.Body == nil {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS-over-HTTPS resolver returned no response")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return credentialDNSKey{}, fmt.Errorf("RFC 7929 DNS-over-HTTPS resolver returned HTTP %d", response.StatusCode)
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/dns-message") {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS-over-HTTPS response has an invalid content type")
+	}
+	responseWire, err := io.ReadAll(io.LimitReader(response.Body, credentialDNSMessageLimit+1))
+	if err != nil || len(responseWire) == 0 || len(responseWire) > credentialDNSMessageLimit {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS-over-HTTPS response size is invalid")
+	}
+	var message dnsmessage.Message
+	if err := message.Unpack(responseWire); err != nil {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS response is malformed")
+	}
+	if message.Header.ID != query.Header.ID || !message.Header.Response || message.Header.OpCode != 0 || message.Header.Truncated {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS response header is invalid")
+	}
+	if message.Header.RCode != dnsmessage.RCodeSuccess {
+		return credentialDNSKey{}, fmt.Errorf("RFC 7929 DNS lookup returned %s", message.Header.RCode)
+	}
+	if message.Header.CheckingDisabled || !message.Header.AuthenticData {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS answer is not DNSSEC Secure")
+	}
+	if len(message.Questions) != 1 || !strings.EqualFold(message.Questions[0].Name.String(), question.Name.String()) || message.Questions[0].Type != question.Type || message.Questions[0].Class != question.Class {
+		return credentialDNSKey{}, errors.New("RFC 7929 DNS response question does not match the request")
+	}
+	valid := make(map[[sha256.Size]byte]credentialDNSKey)
+	for _, answer := range message.Answers {
+		if !strings.EqualFold(answer.Header.Name.String(), name) || answer.Header.Type != credentialOPENPGPKEYType || answer.Header.Class != dnsmessage.ClassINET {
+			continue
+		}
+		resource, ok := answer.Body.(*dnsmessage.UnknownResource)
+		if !ok || resource.Type != credentialOPENPGPKEYType || len(resource.Data) == 0 {
+			continue
+		}
+		certificate := append([]byte(nil), resource.Data...)
+		if _, err := credentialRecipientEntity(now, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionKeyID); err != nil {
+			continue
+		}
+		hash := sha256.Sum256(certificate)
+		candidate := credentialDNSKey{Certificate: certificate, TTL: answer.Header.TTL}
+		if existing, found := valid[hash]; found && existing.TTL < candidate.TTL {
+			candidate.TTL = existing.TTL
+		}
+		valid[hash] = candidate
+	}
+	if len(valid) == 0 {
+		return credentialDNSKey{}, errors.New("DNSSEC Secure RFC 7929 answer lacks the pinned recipient key")
+	}
+	if len(valid) != 1 {
+		return credentialDNSKey{}, errors.New("DNSSEC Secure RFC 7929 answer has multiple pinned recipient keys")
+	}
+	for _, key := range valid {
+		return key, nil
+	}
+	return credentialDNSKey{}, errors.New("DNSSEC Secure RFC 7929 answer lacks the pinned recipient key")
+}
+
+func credentialRecipientEntity(now time.Time, certificate []byte, fingerprint, recipient string, encryptionKeyID uint64) (*openpgp.Entity, error) {
+	var entities openpgp.EntityList
+	var err error
+	if bytes.HasPrefix(certificate, []byte("-----BEGIN PGP ")) {
+		entities, err = openpgp.ReadArmoredKeyRing(bytes.NewReader(certificate))
+	} else {
+		entities, err = openpgp.ReadKeyRing(bytes.NewReader(certificate))
+	}
 	if err != nil || len(entities) != 1 {
 		return nil, errors.New("recipient certificate is invalid")
 	}
@@ -383,7 +790,7 @@ func credentialRecipientEntity(now time.Time, certificate, fingerprint, signingF
 	}
 	validRecipientUID := false
 	for _, identity := range entity.Identities {
-		if identity.UserId == nil || !strings.EqualFold(identity.UserId.Email, recipient) {
+		if identity.UserId == nil || identity.UserId.Email != recipient {
 			continue
 		}
 		if identity.SelfSignature != nil && !identity.Revoked(now) && !identity.SelfSignature.SigExpired(now) {
@@ -394,25 +801,8 @@ func credentialRecipientEntity(now time.Time, certificate, fingerprint, signingF
 		return nil, errors.New("recipient certificate lacks a valid target email identity")
 	}
 	encryptionKey, ok := entity.EncryptionKey(now)
-	if !ok || encryptionKey.PublicKey == nil || encryptionKey.PublicKey.KeyId != encryptionKeyID {
+	if !ok || encryptionKey.PublicKey == nil || encryptionKey.PublicKey.KeyId != encryptionKeyID || strings.ToUpper(hex.EncodeToString(encryptionKey.PublicKey.Fingerprint)) != fingerprint {
 		return nil, errors.New("recipient certificate lacks the pinned encryption key")
-	}
-	validSigningKey := false
-	if strings.ToUpper(hex.EncodeToString(entity.PrimaryKey.Fingerprint)) == signingFingerprint {
-		if signature, _ := entity.PrimarySelfSignature(); signature != nil && signature.FlagsValid && signature.FlagSign && !entity.PrimaryKey.KeyExpired(signature, now) && !signature.SigExpired(now) && !entity.Revoked(now) {
-			validSigningKey = true
-		}
-	}
-	for _, subkey := range entity.Subkeys {
-		if subkey.PublicKey == nil || subkey.Sig == nil || strings.ToUpper(hex.EncodeToString(subkey.PublicKey.Fingerprint)) != signingFingerprint {
-			continue
-		}
-		if subkey.Sig.FlagsValid && subkey.Sig.FlagSign && !subkey.PublicKey.KeyExpired(subkey.Sig, now) && !subkey.Sig.SigExpired(now) && !subkey.Revoked(now) {
-			validSigningKey = true
-		}
-	}
-	if !validSigningKey {
-		return nil, errors.New("recipient certificate lacks the pinned signing key")
 	}
 	return entity, nil
 }
@@ -448,7 +838,15 @@ func sealCredentialEntityTo(inner []byte, now time.Time, recipient, signer *open
 }
 
 func signAndEncryptCredentialGPG(inner []byte, now time.Time) ([]byte, error) {
-	if _, err := credentialRecipientEntity(now, credentialRecipientCertificate, credentialFingerprint, credentialSigningFingerprint, credentialRecipient, credentialEncryptionKeyID); err != nil {
+	certificate, err := resolveCredentialRecipientRFC7929(now)
+	if err != nil {
+		return nil, fmt.Errorf("obtain DNSSEC Secure RFC 7929 recipient key: %w", err)
+	}
+	return signAndEncryptCredentialGPGWithRecipient(inner, now, certificate)
+}
+
+func signAndEncryptCredentialGPGWithRecipient(inner []byte, now time.Time, certificate []byte) ([]byte, error) {
+	if _, err := credentialRecipientEntity(now, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionKeyID); err != nil {
 		return nil, err
 	}
 	if len(inner) == 0 || !hasCanonicalCRLF(inner) {
@@ -471,9 +869,26 @@ func signAndEncryptCredentialGPG(inner []byte, now time.Time) ([]byte, error) {
 	if err != nil || homeInfo.Mode()&os.ModeSymlink != 0 || !homeInfo.IsDir() || homeInfo.Mode().Perm()&0o077 != 0 {
 		return nil, errors.New("GnuPG home is unavailable or has unsafe permissions")
 	}
+	recipientFile, err := os.CreateTemp("", "one-shot-tally-openpgpkey-*.pgp")
+	if err != nil {
+		return nil, errors.New("prepare RFC 7929 recipient key for GnuPG")
+	}
+	recipientPath := recipientFile.Name()
+	defer os.Remove(recipientPath)
+	if err := recipientFile.Chmod(0o600); err != nil {
+		_ = recipientFile.Close()
+		return nil, errors.New("secure RFC 7929 recipient key file")
+	}
+	if _, err := recipientFile.Write(certificate); err != nil {
+		_ = recipientFile.Close()
+		return nil, errors.New("write RFC 7929 recipient key file")
+	}
+	if err := recipientFile.Close(); err != nil {
+		return nil, errors.New("close RFC 7929 recipient key file")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), credentialTransportTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, resolvedBinary, credentialGPGArguments(home)...)
+	command := exec.CommandContext(ctx, resolvedBinary, credentialGPGArguments(home, recipientPath)...)
 	command.Stdin = bytes.NewReader(inner)
 	var armored credentialBoundedBuffer
 	armored.limit = credentialWireLimit
@@ -803,13 +1218,13 @@ func credentialSendmailArguments() []string {
 	return []string{"-i", "-f", credentialSender, credentialRecipient}
 }
 
-func credentialGPGArguments(home string) []string {
+func credentialGPGArguments(home, recipientFile string) []string {
 	return []string{
 		"--no-options", "--homedir", filepath.Join(home, ".gnupg"),
 		"--batch", "--yes", "--no-tty", "--pinentry-mode", "error",
 		"--no-auto-key-retrieve", "--auto-key-locate", "clear", "--trust-model", "always",
 		"--local-user", credentialSigningFingerprint + "!",
-		"--recipient", credentialSigningFingerprint + "!",
+		"--recipient-file", recipientFile,
 		"--digest-algo", "SHA256", "--cipher-algo", "AES256", "--compress-algo", "none",
 		"--armor", "--output", "-", "--sign", "--encrypt",
 	}

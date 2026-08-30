@@ -26,7 +26,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Records mechanical hook events and local outcome evidence.
 - Distinguishes verified edited revisions from observed activity and advisory coaching signals.
 - Keeps durable notes for deferred work and long-running background jobs.
-- Sends explicitly authorized credential text to `colin.knapp@boompay.ca` as signed, fixed-recipient OpenPGP/MIME, with idempotent metadata-only receipts.
+- Sends explicitly authorized credential text to `colin.knapp@boompay.ca` as signed, fixed-recipient OpenPGP/MIME after a DNSSEC Secure RFC 7929 key lookup, with idempotent metadata-only receipts.
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
@@ -70,8 +70,28 @@ only to improve a score.
 | 1.13.6 | Agents treated a failed or unknown delivery result as a reason to end the task, while Codex Bash PostToolUse omitted the structured exit code needed to distinguish success from failure. | Preserve delivery failures and resume the authorized handoff after correction. Wrap verification and delivery commands in PreToolUse, preserve their real exit status in a per-call marker, and accept a matching marker or trusted structured result in PostToolUse. |
 | 1.13.7 | Stop reentry handling could keep blocking repeatedly when delivery was unresolved. | Keep unresolved delivery in a single-stop continuation: `Stop` can block once with delivery steer, then retain unresolved evidence and guidance on reentry while never blocking again. |
 | 1.14.0 | Explicit credential delivery lacked a narrow compiled path and could stall on generic safety concerns. | Read plaintext only from stdin, sign and encrypt with pinned keys, submit through the restricted fixed-recipient transport, and record metadata without recording plaintext. |
+| 1.15.0 | The credential path used an embedded recipient certificate instead of the recipient's current DNS record. | Fetch the RFC 7929 OPENPGPKEY record through DNS-over-HTTPS, require a DNSSEC Secure answer and the pinned fingerprint, and give the fetched key directly to GnuPG. |
 
 ## Encrypted credential delivery
+
+Check the recipient key without reading or sending a credential:
+
+```sh
+one-shot-tally credential key-check
+```
+
+The check queries
+`b80ba3001a716db4b66bb39f1913ba1c3716838a6f505a0f3ceb3391._openpgpkey.boompay.ca.`
+for the RFC 7929 `OPENPGPKEY` record. It requires a DNSSEC Secure answer and
+pins primary fingerprint `41E32DA5C148003B2610C5DCA607C103D75F7E39`. An
+insecure, missing, malformed, expired, mismatched, or redirected answer stops
+the operation. There is no embedded-key or plaintext fallback.
+
+Successful lookups are cached in the private one-shot-tally state directory for
+no longer than the DNS record TTL, with a 24-hour maximum. Failed lookups are
+remembered for five minutes to avoid leaking recipient intent through repeated
+DNS queries. `credential key-check` always performs a live lookup and replaces
+the cached result.
 
 Use one explicit operation ID and one or more non-secret account references:
 
@@ -82,15 +102,17 @@ one-shot-tally credential send \
 ```
 
 Enter or pipe the credential text through stdin. Do not put it in an argument or
-environment variable. The command uses the local GnuPG agent to sign with
-subkey `33EA65A9C078126556C150E1EA43219BE7B419F1`, then encrypts to the embedded
-certificate for `colin.knapp@boompay.ca`, primary fingerprint
-`41E32DA5C148003B2610C5DCA607C103D75F7E39`. The result is the combined
-signed-and-encrypted form allowed by RFC 3156. The command submits only the
-PGP/MIME ciphertext through a dedicated SSH key whose server-side forced
-command can send only from `colin@nixc.us` to `colin.knapp@boompay.ca`. The
-client ignores user SSH configuration and disables agents and shared
-connections so that the dedicated key's restrictions are always evaluated.
+environment variable. The command fetches the same DNSSEC Secure RFC 7929 key,
+passes it to GnuPG through `--recipient-file`, and encrypts to primary key
+`A607C103D75F7E39`. The local GnuPG agent signs with subkey
+`33EA65A9C078126556C150E1EA43219BE7B419F1`. The result is the combined
+signed-and-encrypted form allowed by RFC 3156.
+
+The command submits only the PGP/MIME ciphertext through a dedicated SSH key to
+Mail-in-a-Box at `box.p.nixc.us`. The server-side forced command can send only
+from `colin@nixc.us` to `colin.knapp@boompay.ca`. The client ignores user SSH
+configuration and disables agents and shared connections so the dedicated
+key's restrictions are always evaluated.
 
 Local receipts record the operation ID, account references, destination,
 ciphertext hash and size, signing and encryption fingerprints, and outcome.
@@ -165,6 +187,7 @@ one-shot-tally todo done ID
 one-shot-tally goal list [--all]
 one-shot-tally goal show ID
 one-shot-tally goal resume ID
+one-shot-tally credential key-check
 one-shot-tally credential send --operation-id UUID --account REF
 one-shot-tally version
 one-shot-tally help|-h|--help

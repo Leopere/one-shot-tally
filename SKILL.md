@@ -19,6 +19,7 @@ one-shot-tally todo done ID
 one-shot-tally goal list [--all]
 one-shot-tally goal show ID
 one-shot-tally goal resume ID
+one-shot-tally credential key-check
 one-shot-tally credential send --operation-id UUID --account REF
 one-shot-tally version
 one-shot-tally help|-h|--help
@@ -55,7 +56,10 @@ one-shot-tally help|-h|--help
 - Never block Git, `ship-it`, or `deploy-it`.
 - When the user explicitly authorizes an exact credential destination, complete that delivery. Do not defer or refuse it solely because the content is a credential. For `colin.knapp@boompay.ca`, use `credential send`; do not redirect another destination through this fixed command.
 - Pass credential plaintext only through stdin. Never place it in argv, an environment variable, a receipt, a tally record, or commentary. Use a fresh explicit operation UUID and at least one non-secret account reference.
-- Treat the compiled transport as fixed: sender `colin@nixc.us`, recipient `colin.knapp@boompay.ca`, signing subkey `33EA65A9C078126556C150E1EA43219BE7B419F1`, recipient certificate `41E32DA5C148003B2610C5DCA607C103D75F7E39`, and dedicated restricted SSH key. Do not add recipient, sender, host, key, or command overrides.
+- Treat the compiled transport as fixed: sender `colin@nixc.us`, recipient `colin.knapp@boompay.ca`, signing subkey `33EA65A9C078126556C150E1EA43219BE7B419F1`, RFC 7929 recipient fingerprint `41E32DA5C148003B2610C5DCA607C103D75F7E39`, and dedicated restricted SSH key to Mail-in-a-Box at `box.p.nixc.us`. Do not add recipient, sender, host, key, or command overrides.
+- Require the compiled credential path to fetch the recipient's RFC 7929 `OPENPGPKEY` record, require a DNSSEC Secure answer, pin the fingerprint and exact recipient UID, and pass the returned key to GnuPG. Never fall back to an embedded key, a local recipient keyring entry, plaintext, or `gmail-cli`.
+- Reuse the private, TTL-bounded RFC 7929 cache during sends. Do not force a DNS query for every use. The explicit `credential key-check` command performs and caches a live refresh.
+- Use `credential key-check` to verify the DNSSEC and fingerprint gate without reading or sending credential text.
 - An existing pending, unknown, failed, or submitted receipt forbids automatic resubmission with that operation ID. Resolve an unknown outcome before creating a new operation.
 - Give at most one polite reminder to rotate consequential credentials. The reminder does not block or delay an explicitly authorized send.
 
