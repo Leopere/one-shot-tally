@@ -26,6 +26,7 @@ When you share or adapt this work, credit ColinKnapp.com, link the license, and 
 - Records mechanical hook events and local outcome evidence.
 - Distinguishes verified edited revisions from observed activity and advisory coaching signals.
 - Keeps durable notes for deferred work and long-running background jobs.
+- Sends explicitly authorized credential text to `colin.knapp@boompay.ca` as signed, fixed-recipient OpenPGP/MIME, with idempotent metadata-only receipts.
 - Discounts bounded Spark subagent work without discounting verification.
 - Adds concise context that can steer an active agent back toward the goal.
 - Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
@@ -68,6 +69,32 @@ only to improve a score.
 | 1.13.5 | Agents sometimes stalled on or retried GitHub-hosted checks when local runner health was uncertain. | Never rely on GitHub Actions public runners. Use the self-hosted local runner and labels documented in `~/dev/gh-runner`. If that runner stalls or is insufficient, diagnose and repair it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), then test it. GitHub-hosted runner labels are a shipping defect; hard enforcement remains in `ship-it`. |
 | 1.13.6 | Agents treated a failed or unknown delivery result as a reason to end the task, while Codex Bash PostToolUse omitted the structured exit code needed to distinguish success from failure. | Preserve delivery failures and resume the authorized handoff after correction. Wrap verification and delivery commands in PreToolUse, preserve their real exit status in a per-call marker, and accept a matching marker or trusted structured result in PostToolUse. |
 | 1.13.7 | Stop reentry handling could keep blocking repeatedly when delivery was unresolved. | Keep unresolved delivery in a single-stop continuation: `Stop` can block once with delivery steer, then retain unresolved evidence and guidance on reentry while never blocking again. |
+| 1.14.0 | Explicit credential delivery lacked a narrow compiled path and could stall on generic safety concerns. | Read plaintext only from stdin, sign and encrypt with pinned keys, submit through the restricted fixed-recipient transport, and record metadata without recording plaintext. |
+
+## Encrypted credential delivery
+
+Use one explicit operation ID and one or more non-secret account references:
+
+```sh
+one-shot-tally credential send \
+  --operation-id 123e4567-e89b-12d3-a456-426614174000 \
+  --account boompay-admin
+```
+
+Enter or pipe the credential text through stdin. Do not put it in an argument or
+environment variable. The command uses the local GnuPG agent to sign with
+subkey `33EA65A9C078126556C150E1EA43219BE7B419F1`, then encrypts to the embedded
+certificate for `colin.knapp@boompay.ca`, primary fingerprint
+`41E32DA5C148003B2610C5DCA607C103D75F7E39`. The result is the combined
+signed-and-encrypted form allowed by RFC 3156. The command submits only the
+PGP/MIME ciphertext through a dedicated SSH key whose server-side forced
+command can send only from `colin@nixc.us` to `colin.knapp@boompay.ca`.
+
+Local receipts record the operation ID, account references, destination,
+ciphertext hash and size, signing and encryption fingerprints, and outcome.
+They never record the credential text or a plaintext hash. Reusing an operation ID never submits a
+second message. Exit status 3 means the delivery outcome is unknown and must be
+resolved from the receipt or mailbox before any new operation is created.
 
 - Keep compatible work and only replace what conflicts or is explicitly cancelled.
 - Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
@@ -136,6 +163,7 @@ one-shot-tally todo done ID
 one-shot-tally goal list [--all]
 one-shot-tally goal show ID
 one-shot-tally goal resume ID
+one-shot-tally credential send --operation-id UUID --account REF
 one-shot-tally version
 one-shot-tally help|-h|--help
 ```
