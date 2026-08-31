@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
@@ -11,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +21,6 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 const credentialTestOperationID = "123e4567-e89b-12d3-a456-426614174000"
@@ -33,7 +30,7 @@ var credentialTestRecipientCertificate string
 
 func TestCredentialEncryptionRoundTrip(t *testing.T) {
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	entity, _, _, _, _ := credentialFixtureEntity(t, now)
+	entity, _, _, _, _, _ := credentialFixtureEntity(t, now)
 	secret := []byte("fixture-secret-that-must-not-leak\nsecond line")
 	inner, err := buildCredentialInnerEntity(secret)
 	if err != nil {
@@ -73,20 +70,22 @@ func TestCredentialEncryptionRoundTrip(t *testing.T) {
 
 func TestCredentialEncryptionRejectsTrustDriftAndPrivateMaterial(t *testing.T) {
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	entity, certificate, fingerprint, _, keyID := credentialFixtureEntity(t, now)
+	entity, certificate, fingerprint, _, encryptionFingerprint, keyID := credentialFixtureEntity(t, now)
 	for _, test := range []struct {
-		name        string
-		certificate []byte
-		fingerprint string
-		recipient   string
-		keyID       uint64
+		name                  string
+		certificate           []byte
+		fingerprint           string
+		recipient             string
+		encryptionFingerprint string
+		keyID                 uint64
 	}{
-		{name: "fingerprint", certificate: certificate, fingerprint: strings.Repeat("0", 40), recipient: "fixture@example.com", keyID: keyID},
-		{name: "recipient UID", certificate: certificate, fingerprint: fingerprint, recipient: "other@example.com", keyID: keyID},
-		{name: "encryption key", certificate: certificate, fingerprint: fingerprint, recipient: "fixture@example.com", keyID: keyID + 1},
+		{name: "primary fingerprint", certificate: certificate, fingerprint: strings.Repeat("0", 40), recipient: "fixture@example.com", encryptionFingerprint: encryptionFingerprint, keyID: keyID},
+		{name: "recipient UID", certificate: certificate, fingerprint: fingerprint, recipient: "other@example.com", encryptionFingerprint: encryptionFingerprint, keyID: keyID},
+		{name: "encryption fingerprint", certificate: certificate, fingerprint: fingerprint, recipient: "fixture@example.com", encryptionFingerprint: strings.Repeat("0", 40), keyID: keyID},
+		{name: "encryption key ID", certificate: certificate, fingerprint: fingerprint, recipient: "fixture@example.com", encryptionFingerprint: encryptionFingerprint, keyID: keyID + 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := credentialRecipientEntity(now, test.certificate, test.fingerprint, test.recipient, test.keyID); err == nil {
+			if _, err := credentialRecipientEntity(now, test.certificate, test.fingerprint, test.recipient, test.encryptionFingerprint, test.keyID); err == nil {
 				t.Fatal("trust drift was accepted")
 			}
 		})
@@ -102,182 +101,100 @@ func TestCredentialEncryptionRejectsTrustDriftAndPrivateMaterial(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := credentialRecipientEntity(now, private.Bytes(), fingerprint, "fixture@example.com", keyID); err == nil || !strings.Contains(err.Error(), "private key material") {
+	if _, err := credentialRecipientEntity(now, private.Bytes(), fingerprint, "fixture@example.com", encryptionFingerprint, keyID); err == nil || !strings.Contains(err.Error(), "private key material") {
 		t.Fatalf("private certificate error = %v", err)
 	}
 }
 
-func TestCredentialOPENPGPKEYNameUsesRFC7929LocalPartHash(t *testing.T) {
-	name, err := credentialOPENPGPKEYName("colin.knapp@boompay.ca")
-	if err != nil {
-		t.Fatal(err)
+func TestCredentialWKDArgumentsAreIsolatedAndPinned(t *testing.T) {
+	wantCleanup := []string{"--homedir", "/fixture/isolated-gnupg", "--kill", "all"}
+	if got := credentialGPGConfArguments("/fixture/isolated-gnupg"); !reflect.DeepEqual(got, wantCleanup) {
+		t.Fatalf("GnuPG cleanup args = %#v, want %#v", got, wantCleanup)
 	}
-	const want = "b80ba3001a716db4b66bb39f1913ba1c3716838a6f505a0f3ceb3391._openpgpkey.boompay.ca."
-	if name != want {
-		t.Fatalf("OPENPGPKEY name = %q, want %q", name, want)
+	wantLocate := []string{
+		"--no-options", "--homedir", "/fixture/isolated-gnupg",
+		"--batch", "--no-tty", "--no-auto-key-retrieve",
+		"--auto-key-locate", "clear,wkd", "--locate-external-key", credentialRecipient,
 	}
-	caseVariant, err := credentialOPENPGPKEYName("Colin.Knapp@boompay.ca")
-	if err != nil {
-		t.Fatal(err)
+	if got := credentialWKDLocateArguments("/fixture/isolated-gnupg"); !reflect.DeepEqual(got, wantLocate) {
+		t.Fatalf("WKD locate args = %#v, want %#v", got, wantLocate)
 	}
-	if caseVariant == name {
-		t.Fatal("RFC 7929 local-part was incorrectly lowercased")
+	wantExport := []string{
+		"--no-options", "--homedir", "/fixture/isolated-gnupg",
+		"--batch", "--no-tty", "--export-options", "export-minimal",
+		"--export", credentialFingerprint,
 	}
-}
-
-func TestFetchCredentialRecipientRFC7929RequiresDNSSECSecurePinnedKey(t *testing.T) {
-	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	key := credentialRFC7929TestKey(t)
-	for _, test := range []struct {
-		name    string
-		secure  bool
-		records [][]byte
-		wantErr string
-	}{
-		{name: "secure pinned key", secure: true, records: [][]byte{[]byte("unrelated-record"), key}},
-		{name: "insecure answer", secure: false, records: [][]byte{key}, wantErr: "not DNSSEC Secure"},
-		{name: "wrong key", secure: true, records: [][]byte{[]byte("unrelated-record")}, wantErr: "lacks the pinned recipient key"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			doer := credentialHTTPDoerFunc(func(request *http.Request) (*http.Response, error) {
-				if request.Method != http.MethodPost || request.URL.String() != "https://resolver.test/dns-query" {
-					t.Fatalf("unexpected DNS-over-HTTPS request: %s %s", request.Method, request.URL)
-				}
-				if request.Header.Get("Accept") != "application/dns-message" || request.Header.Get("Content-Type") != "application/dns-message" {
-					t.Fatalf("unexpected DNS-over-HTTPS headers: %#v", request.Header)
-				}
-				requestWire, err := io.ReadAll(request.Body)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var query dnsmessage.Message
-				if err := query.Unpack(requestWire); err != nil {
-					t.Fatal(err)
-				}
-				if !query.Header.RecursionDesired || len(query.Questions) != 1 || query.Questions[0].Type != credentialOPENPGPKEYType {
-					t.Fatalf("unexpected DNS question: %#v", query)
-				}
-				if len(query.Additionals) != 1 || query.Additionals[0].Header.Type != dnsmessage.TypeOPT || query.Additionals[0].Header.TTL&(1<<15) == 0 {
-					t.Fatalf("DNSSEC OK bit is missing: %#v", query.Additionals)
-				}
-				answers := make([]dnsmessage.Resource, 0, len(test.records))
-				for _, record := range test.records {
-					answers = append(answers, dnsmessage.Resource{
-						Header: dnsmessage.ResourceHeader{Name: query.Questions[0].Name, Type: credentialOPENPGPKEYType, Class: dnsmessage.ClassINET, TTL: 300},
-						Body:   &dnsmessage.UnknownResource{Type: credentialOPENPGPKEYType, Data: record},
-					})
-				}
-				responseMessage := dnsmessage.Message{
-					Header:    dnsmessage.Header{ID: query.Header.ID, Response: true, RecursionAvailable: true, AuthenticData: test.secure, RCode: dnsmessage.RCodeSuccess},
-					Questions: query.Questions,
-					Answers:   answers,
-				}
-				responseWire, err := responseMessage.Pack()
-				if err != nil {
-					t.Fatal(err)
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{"Content-Type": []string{"application/dns-message"}},
-					Body:       io.NopCloser(bytes.NewReader(responseWire)),
-				}, nil
-			})
-			got, err := fetchCredentialRecipientRFC7929(context.Background(), doer, "https://resolver.test/dns-query", now)
-			if test.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-					t.Fatalf("error = %v, want %q", err, test.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(got.Certificate, key) || got.TTL != 300 {
-				t.Fatal("resolver did not return the DNSSEC Secure pinned key")
-			}
-		})
+	if got := credentialWKDExportArguments("/fixture/isolated-gnupg"); !reflect.DeepEqual(got, wantExport) {
+		t.Fatalf("WKD export args = %#v, want %#v", got, wantExport)
 	}
 }
 
-func TestCredentialRFC7929CacheHonorsTTLAndRemembersFailures(t *testing.T) {
+func TestCredentialWKDCacheHonorsTTLAndRemembersFailures(t *testing.T) {
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	key := credentialRFC7929TestKey(t)
-	t.Run("positive TTL", func(t *testing.T) {
+	key := credentialWKDTestKey(t)
+	t.Run("success TTL and tamper resistance", func(t *testing.T) {
 		t.Setenv("ONE_SHOT_STATE_DIR", t.TempDir())
 		calls := 0
-		fetch := func(time.Time) (credentialDNSKey, error) {
+		fetch := func(time.Time) ([]byte, error) {
 			calls++
-			return credentialDNSKey{Certificate: key, TTL: 300}, nil
+			return key, nil
 		}
-		for _, checkTime := range []time.Time{now, now.Add(299 * time.Second), now.Add(300 * time.Second)} {
-			certificate, err := resolveCredentialRecipientRFC7929Cached(checkTime, false, fetch)
+		for _, checkTime := range []time.Time{now, now.Add(credentialWKDCacheTTL - time.Second), now.Add(credentialWKDCacheTTL)} {
+			certificate, err := resolveCredentialRecipientWKDCached(checkTime, false, fetch)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(certificate, key) {
-				t.Fatal("cached RFC 7929 key differs")
+				t.Fatal("cached WKD key differs")
 			}
 		}
 		if calls != 2 {
-			t.Fatalf("DNS fetches = %d, want 2 across a hit and TTL expiry", calls)
+			t.Fatalf("WKD fetches = %d, want 2 across a hit and TTL expiry", calls)
 		}
-		cachePath, err := credentialDNSCachePath()
+		cachePath, err := credentialKeyCachePath()
 		if err != nil {
 			t.Fatal(err)
 		}
-		cache, found, err := loadCredentialDNSCache(cachePath)
+		cache, found, err := loadCredentialKeyCache(cachePath)
 		if err != nil || !found {
 			t.Fatalf("load cache: found=%v err=%v", found, err)
 		}
-		cache.ExpiresAt = cache.CachedAt.Add(credentialDNSCacheMaxTTL + time.Second)
-		if err := saveCredentialDNSCache(cachePath, cache); err != nil {
+		if cache.EncryptionFingerprint != credentialEncryptionFingerprint {
+			t.Fatalf("cached encryption fingerprint = %q", cache.EncryptionFingerprint)
+		}
+		cache.ExpiresAt = cache.CachedAt.Add(credentialWKDCacheTTL + time.Second)
+		if err := saveCredentialKeyCache(cachePath, cache); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := resolveCredentialRecipientRFC7929Cached(now.Add(301*time.Second), false, fetch); err != nil {
+		if _, err := resolveCredentialRecipientWKDCached(now.Add(credentialWKDCacheTTL+time.Second), false, fetch); err != nil {
 			t.Fatal(err)
 		}
 		if calls != 3 {
-			t.Fatalf("tampered expiry was trusted; DNS fetches = %d, want 3", calls)
-		}
-	})
-	t.Run("maximum TTL", func(t *testing.T) {
-		t.Setenv("ONE_SHOT_STATE_DIR", t.TempDir())
-		calls := 0
-		fetch := func(time.Time) (credentialDNSKey, error) {
-			calls++
-			return credentialDNSKey{Certificate: key, TTL: uint32((48 * time.Hour) / time.Second)}, nil
-		}
-		for _, checkTime := range []time.Time{now, now.Add(credentialDNSCacheMaxTTL - time.Second), now.Add(credentialDNSCacheMaxTTL)} {
-			if _, err := resolveCredentialRecipientRFC7929Cached(checkTime, false, fetch); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if calls != 2 {
-			t.Fatalf("DNS fetches = %d, want 2 at the cache TTL cap", calls)
+			t.Fatalf("tampered expiry was trusted; WKD fetches = %d, want 3", calls)
 		}
 	})
 	t.Run("failure and forced refresh", func(t *testing.T) {
 		t.Setenv("ONE_SHOT_STATE_DIR", t.TempDir())
 		calls := 0
-		secure := false
-		fetch := func(time.Time) (credentialDNSKey, error) {
+		available := false
+		fetch := func(time.Time) ([]byte, error) {
 			calls++
-			if !secure {
-				return credentialDNSKey{}, errors.New("resolver unavailable")
+			if !available {
+				return nil, errors.New("WKD unavailable")
 			}
-			return credentialDNSKey{Certificate: key, TTL: 300}, nil
+			return key, nil
 		}
-		if _, err := resolveCredentialRecipientRFC7929Cached(now, false, fetch); err == nil || !strings.Contains(err.Error(), "resolver unavailable") {
+		if _, err := resolveCredentialRecipientWKDCached(now, false, fetch); err == nil || !strings.Contains(err.Error(), "WKD unavailable") {
 			t.Fatalf("initial failure = %v", err)
 		}
-		if _, err := resolveCredentialRecipientRFC7929Cached(now.Add(time.Second), false, fetch); err == nil || !strings.Contains(err.Error(), "suppressed after a recent failure") {
+		if _, err := resolveCredentialRecipientWKDCached(now.Add(time.Second), false, fetch); err == nil || !strings.Contains(err.Error(), "suppressed after a recent failure") {
 			t.Fatalf("cached failure = %v", err)
 		}
 		if calls != 1 {
-			t.Fatalf("failure cache made %d DNS fetches, want 1", calls)
+			t.Fatalf("failure cache made %d WKD fetches, want 1", calls)
 		}
-		secure = true
-		certificate, err := resolveCredentialRecipientRFC7929Cached(now.Add(2*time.Second), true, fetch)
+		available = true
+		certificate, err := resolveCredentialRecipientWKDCached(now.Add(2*time.Second), true, fetch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,26 +202,27 @@ func TestCredentialRFC7929CacheHonorsTTLAndRemembersFailures(t *testing.T) {
 			t.Fatalf("forced refresh calls=%d key_matches=%v", calls, bytes.Equal(certificate, key))
 		}
 	})
-	t.Run("zero TTL failure", func(t *testing.T) {
+	t.Run("wrong key is a cached failure", func(t *testing.T) {
 		t.Setenv("ONE_SHOT_STATE_DIR", t.TempDir())
+		_, wrongKey, _, _, _, _ := credentialFixtureEntity(t, now)
 		calls := 0
-		fetch := func(time.Time) (credentialDNSKey, error) {
+		fetch := func(time.Time) ([]byte, error) {
 			calls++
-			return credentialDNSKey{Certificate: key, TTL: 0}, nil
+			return wrongKey, nil
 		}
-		if _, err := resolveCredentialRecipientRFC7929Cached(now, false, fetch); err == nil || !strings.Contains(err.Error(), "zero TTL") {
-			t.Fatalf("zero TTL error = %v", err)
+		if _, err := resolveCredentialRecipientWKDCached(now, false, fetch); err == nil || !strings.Contains(err.Error(), "lacks the pinned recipient key") {
+			t.Fatalf("wrong-key error = %v", err)
 		}
-		if _, err := resolveCredentialRecipientRFC7929Cached(now.Add(time.Second), false, fetch); err == nil || !strings.Contains(err.Error(), "suppressed after a recent failure") {
-			t.Fatalf("cached zero TTL error = %v", err)
+		if _, err := resolveCredentialRecipientWKDCached(now.Add(time.Second), false, fetch); err == nil || !strings.Contains(err.Error(), "suppressed after a recent failure") {
+			t.Fatalf("cached wrong-key error = %v", err)
 		}
 		if calls != 1 {
-			t.Fatalf("zero TTL failure made %d DNS fetches, want 1", calls)
+			t.Fatalf("wrong-key failure made %d WKD fetches, want 1", calls)
 		}
 	})
 }
 
-func TestCredentialRFC7929CacheSerializesConcurrentMisses(t *testing.T) {
+func TestCredentialWKDCacheSerializesConcurrentMisses(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
 	counterPath := filepath.Join(t.TempDir(), "fetch-count")
@@ -312,10 +230,10 @@ func TestCredentialRFC7929CacheSerializesConcurrentMisses(t *testing.T) {
 	commands := make([]*exec.Cmd, 0, processes)
 	outputs := make([]bytes.Buffer, processes)
 	for i := range processes {
-		command := exec.Command(os.Args[0], "-test.run=^TestCredentialRFC7929CacheProcessHelper$")
+		command := exec.Command(os.Args[0], "-test.run=^TestCredentialWKDCacheProcessHelper$")
 		command.Env = append(os.Environ(),
-			"ONE_SHOT_RFC7929_CACHE_HELPER=1",
-			"ONE_SHOT_RFC7929_CACHE_COUNTER="+counterPath,
+			"ONE_SHOT_WKD_CACHE_HELPER=1",
+			"ONE_SHOT_WKD_CACHE_COUNTER="+counterPath,
 		)
 		command.Stdout = &outputs[i]
 		command.Stderr = &outputs[i]
@@ -334,31 +252,31 @@ func TestCredentialRFC7929CacheSerializesConcurrentMisses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(count) != 1 {
-		t.Fatalf("concurrent cache misses made %d DNS fetches, want 1", len(count))
+		t.Fatalf("concurrent cache misses made %d WKD fetches, want 1", len(count))
 	}
 }
 
-func TestCredentialRFC7929CacheProcessHelper(t *testing.T) {
-	if os.Getenv("ONE_SHOT_RFC7929_CACHE_HELPER") != "1" {
+func TestCredentialWKDCacheProcessHelper(t *testing.T) {
+	if os.Getenv("ONE_SHOT_WKD_CACHE_HELPER") != "1" {
 		return
 	}
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	fetch := func(time.Time) (credentialDNSKey, error) {
-		counter, err := os.OpenFile(os.Getenv("ONE_SHOT_RFC7929_CACHE_COUNTER"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	fetch := func(time.Time) ([]byte, error) {
+		counter, err := os.OpenFile(os.Getenv("ONE_SHOT_WKD_CACHE_COUNTER"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
-			return credentialDNSKey{}, err
+			return nil, err
 		}
 		if _, err := counter.Write([]byte{1}); err != nil {
 			_ = counter.Close()
-			return credentialDNSKey{}, err
+			return nil, err
 		}
 		if err := counter.Close(); err != nil {
-			return credentialDNSKey{}, err
+			return nil, err
 		}
 		time.Sleep(200 * time.Millisecond)
-		return credentialDNSKey{Certificate: credentialRFC7929TestKey(t), TTL: 300}, nil
+		return credentialWKDTestKey(t), nil
 	}
-	if _, err := resolveCredentialRecipientRFC7929Cached(now, false, fetch); err != nil {
+	if _, err := resolveCredentialRecipientWKDCached(now, false, fetch); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -370,12 +288,12 @@ func TestCredentialKeyCheckReportsOnlyPublicMetadata(t *testing.T) {
 		if !got.Equal(now) {
 			t.Fatalf("key check time = %s, want %s", got, now)
 		}
-		return credentialRFC7929TestKey(t), nil
+		return credentialWKDTestKey(t), nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"DNSSEC Secure RFC 7929 OPENPGPKEY", credentialRecipient, credentialFingerprint, fmt.Sprintf("%016X", credentialEncryptionKeyID)} {
+	for _, want := range []string{"GnuPG WKD lookup", credentialRecipient, credentialFingerprint, credentialEncryptionFingerprint, fmt.Sprintf("%016X", credentialEncryptionKeyID)} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("key check output misses %q: %s", want, output.String())
 		}
@@ -475,7 +393,7 @@ func TestCredentialSendRecordsMetadataAndNeverResubmits(t *testing.T) {
 	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
 		t.Fatal(err)
 	}
-	if receipt.State != "submitted" || receipt.Recipient != credentialRecipient || receipt.KeyFingerprint != credentialFingerprint || receipt.SigningFingerprint != credentialSigningFingerprint || len(receipt.AccountRefs) != 2 {
+	if receipt.State != "submitted" || receipt.Recipient != credentialRecipient || receipt.KeyFingerprint != credentialFingerprint || receipt.EncryptionFingerprint != credentialEncryptionFingerprint || receipt.SigningFingerprint != credentialSigningFingerprint || len(receipt.AccountRefs) != 2 {
 		t.Fatalf("unexpected receipt: %#v", receipt)
 	}
 	receiptInfo, err := os.Stat(receiptPath)
@@ -642,7 +560,7 @@ func TestCredentialReceiverRejectsOuterLeaksAndOtherRecipientKeys(t *testing.T) 
 	if _, err := validateCredentialMessage(leaky); err == nil {
 		t.Fatal("receiver accepted an unapproved plaintext outer header")
 	}
-	fixtureEntity, _, _, _, _ := credentialFixtureEntity(t, now)
+	fixtureEntity, _, _, _, _, _ := credentialFixtureEntity(t, now)
 	fixtureInner, err := buildCredentialInnerEntity([]byte("wrong-key"))
 	if err != nil {
 		t.Fatal(err)
@@ -658,7 +576,7 @@ func TestCredentialReceiverRejectsOuterLeaksAndOtherRecipientKeys(t *testing.T) 
 
 func TestCredentialReceiverRejectsLegacyUnauthenticatedEncryption(t *testing.T) {
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	entities, err := openpgp.ReadKeyRing(bytes.NewReader(credentialRFC7929TestKey(t)))
+	entities, err := openpgp.ReadKeyRing(bytes.NewReader(credentialWKDTestKey(t)))
 	if err != nil || len(entities) != 1 {
 		t.Fatalf("recipient certificate: entities=%d err=%v", len(entities), err)
 	}
@@ -746,7 +664,7 @@ func TestCredentialTransportRejectsCompanionCertificate(t *testing.T) {
 	}
 }
 
-func TestCredentialGPGCombinedSigningWhenKeyIsAvailable(t *testing.T) {
+func TestCredentialGPGSignsAndEncryptsToWKDKeyWhenSignerIsAvailable(t *testing.T) {
 	if _, err := os.Stat(credentialGPGBinary); err != nil {
 		t.Skip("pinned GnuPG binary is not installed")
 	}
@@ -765,32 +683,31 @@ func TestCredentialGPGCombinedSigningWhenKeyIsAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	armored, err := signAndEncryptCredentialGPGWithRecipient(inner, time.Now().UTC(), credentialRFC7929TestKey(t))
+	armored, err := signAndEncryptCredentialGPGWithRecipient(inner, time.Now().UTC(), credentialWKDTestKey(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(armored, secret) {
 		t.Fatal("signed ciphertext contains plaintext")
 	}
-	decrypt := exec.Command(credentialGPGBinary, "--no-options", "--homedir", filepath.Join(home, ".gnupg"), "--batch", "--no-tty", "--status-fd", "2", "--decrypt")
-	decrypt.Stdin = bytes.NewReader(armored)
-	var decrypted, status bytes.Buffer
-	decrypt.Stdout = &decrypted
-	decrypt.Stderr = &status
-	if err := decrypt.Run(); err != nil {
-		t.Fatalf("GnuPG decrypt and verify failed: %v\n%s", err, status.String())
+	if err := validateCredentialArmor(armored); err != nil {
+		t.Fatal(err)
 	}
-	if !bytes.Equal(decrypted.Bytes(), inner) {
-		t.Fatalf("decrypted inner MIME entity differs: got=%q want=%q", decrypted.Bytes(), inner)
+	block, err := armor.Decode(bytes.NewReader(armored))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, marker := range []string{"[GNUPG:] DECRYPTION_OKAY", "[GNUPG:] GOODSIG", "[GNUPG:] VALIDSIG " + credentialSigningFingerprint} {
-		if !strings.Contains(status.String(), marker) {
-			t.Fatalf("GnuPG status misses %q:\n%s", marker, status.String())
-		}
+	first, err := packet.NewReader(block.Body).Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedKey, ok := first.(*packet.EncryptedKey)
+	if !ok || encryptedKey.KeyId != credentialEncryptionKeyID {
+		t.Fatalf("encrypted key packet = %#v, want key ID %016X", first, credentialEncryptionKeyID)
 	}
 }
 
-func credentialFixtureEntity(t *testing.T, now time.Time) (*openpgp.Entity, []byte, string, string, uint64) {
+func credentialFixtureEntity(t *testing.T, now time.Time) (*openpgp.Entity, []byte, string, string, string, uint64) {
 	t.Helper()
 	config := &packet.Config{RSABits: 2048, Time: func() time.Time { return now }}
 	entity, err := openpgp.NewEntity("Fixture", "", "fixture@example.com", config)
@@ -818,42 +735,30 @@ func credentialFixtureEntity(t *testing.T, now time.Time) (*openpgp.Entity, []by
 		t.Fatal("fixture has no signing key")
 	}
 	signingFingerprint := strings.ToUpper(hex.EncodeToString(signingKey.PublicKey.Fingerprint))
-	return entity, public.Bytes(), fingerprint, signingFingerprint, key.PublicKey.KeyId
+	encryptionFingerprint := strings.ToUpper(hex.EncodeToString(key.PublicKey.Fingerprint))
+	return entity, public.Bytes(), fingerprint, signingFingerprint, encryptionFingerprint, key.PublicKey.KeyId
 }
 
-func credentialRFC7929TestKey(t *testing.T) []byte {
+func credentialWKDTestKey(t *testing.T) []byte {
 	t.Helper()
-	entities, err := openpgp.ReadArmoredKeyRing(strings.NewReader(credentialTestRecipientCertificate))
-	if err != nil || len(entities) != 1 {
-		t.Fatalf("test recipient certificate: entities=%d err=%v", len(entities), err)
+	block, err := armor.Decode(strings.NewReader(credentialTestRecipientCertificate))
+	if err != nil || block.Type != openpgp.PublicKeyType {
+		t.Fatalf("test recipient certificate armor: type=%q err=%v", block.Type, err)
 	}
-	entity := entities[0]
-	entity.Subkeys = nil
-	for name, identity := range entity.Identities {
-		if identity.UserId == nil || identity.UserId.Email != credentialRecipient {
-			delete(entity.Identities, name)
-		}
-	}
-	var binary bytes.Buffer
-	if err := entity.Serialize(&binary); err != nil {
+	binary, err := io.ReadAll(block.Body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return binary.Bytes()
+	return binary
 }
 
 func credentialProductionTestSeal(t *testing.T, inner []byte, now time.Time) ([]byte, error) {
 	t.Helper()
-	recipient, err := credentialRecipientEntity(now, credentialRFC7929TestKey(t), credentialFingerprint, credentialRecipient, credentialEncryptionKeyID)
+	recipient, err := credentialRecipientEntity(now, credentialWKDTestKey(t), credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID)
 	if err != nil {
 		return nil, err
 	}
 	return sealCredentialEntityTo(inner, now, recipient, nil)
-}
-
-type credentialHTTPDoerFunc func(*http.Request) (*http.Response, error)
-
-func (f credentialHTTPDoerFunc) Do(request *http.Request) (*http.Response, error) {
-	return f(request)
 }
 
 type errorCredentialReader struct{}

@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.15.0"
+const binaryVersion = "1.16.0"
 
 const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
 
@@ -291,7 +291,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally goal show ID      print a previous goal")
 	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the exact create_goal handoff")
 	fmt.Fprintln(w, "  one-shot-tally credential key-check")
-	fmt.Fprintln(w, "                                  verify the DNSSEC Secure RFC 7929 recipient key")
+	fmt.Fprintln(w, "                                  verify the pinned GnuPG WKD recipient key")
 	fmt.Fprintln(w, "  one-shot-tally credential send --operation-id UUID --account REF")
 	fmt.Fprintln(w, "                                  fetch the key, then sign, encrypt, and send stdin")
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
