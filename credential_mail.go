@@ -30,30 +30,27 @@ import (
 )
 
 const (
-	credentialSender                = "colin@nixc.us"
-	credentialRecipient             = "colin.knapp@boompay.ca"
-	credentialSubject               = "OpenPGP credential delivery"
-	credentialFingerprint           = "6183F2DE176E9D46EDB602951B7D7262C3D0207D"
-	credentialEncryptionFingerprint = "9E5310E1F125CC2696E2C0385FE016062B506A77"
-	credentialSigningFingerprint    = "33EA65A9C078126556C150E1EA43219BE7B419F1"
-	credentialEncryptionKeyID       = uint64(0x5FE016062B506A77)
-	credentialGPGBinary             = "/opt/homebrew/bin/gpg"
-	credentialSSHHost               = "box.p.nixc.us"
-	credentialSSHHostKeyAlias       = "89.117.56.210"
-	credentialSSHUser               = "root"
-	credentialReceiverStateDir      = "/var/lib/one-shot-tally-openpgp-mail"
-	credentialPlaintextLimit        = 64 * 1024
-	credentialWireLimit             = 256 * 1024
-	credentialReceiptLimit          = 32 * 1024
-	credentialTransportTimeout      = 30 * time.Second
-	credentialWKDLookupTimeout      = 15 * time.Second
-	credentialWKDCleanupTimeout     = 3 * time.Second
-	credentialWKDCacheTTL           = time.Hour
-	credentialWKDFailureCacheTTL    = 5 * time.Minute
-	credentialChannel               = "openpgp-gnupg-wkd-pgp-mime-signed-encrypted-ssh"
-	credentialPrivateKeyFilename    = "credential-mail_ed25519"
-	credentialKeyCacheFilename      = "wkd-openpgpkey-cache.json"
-	credentialKeyCacheVersion       = 2
+	credentialSender             = "colin@nixc.us"
+	credentialRecipient          = "colin.knapp@boompay.ca"
+	credentialSubject            = "OpenPGP credential delivery"
+	credentialSigningFingerprint = "33EA65A9C078126556C150E1EA43219BE7B419F1"
+	credentialGPGBinary          = "/opt/homebrew/bin/gpg"
+	credentialSSHHost            = "box.p.nixc.us"
+	credentialSSHHostKeyAlias    = "89.117.56.210"
+	credentialSSHUser            = "root"
+	credentialReceiverStateDir   = "/var/lib/one-shot-tally-openpgp-mail"
+	credentialPlaintextLimit     = 64 * 1024
+	credentialWireLimit          = 256 * 1024
+	credentialReceiptLimit       = 32 * 1024
+	credentialTransportTimeout   = 30 * time.Second
+	credentialWKDLookupTimeout   = 15 * time.Second
+	credentialWKDCleanupTimeout  = 3 * time.Second
+	credentialWKDCacheTTL        = time.Hour
+	credentialWKDFailureCacheTTL = 5 * time.Minute
+	credentialChannel            = "openpgp-gnupg-wkd-pgp-mime-signed-encrypted-ssh"
+	credentialPrivateKeyFilename = "credential-mail_ed25519"
+	credentialKeyCacheFilename   = "wkd-openpgpkey-cache.json"
+	credentialKeyCacheVersion    = 3
 )
 
 var (
@@ -179,11 +176,13 @@ func credentialKeyCheck(args []string, w io.Writer, now func() time.Time, resolv
 	if err != nil {
 		return fmt.Errorf("GnuPG WKD key check failed: %w", err)
 	}
-	if _, err := credentialRecipientEntity(checkTime, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID); err != nil {
+	entity, err := credentialRecipientEntity(checkTime, certificate, credentialRecipient)
+	if err != nil {
 		return fmt.Errorf("GnuPG WKD key check failed: %w", err)
 	}
+	primary, encryption, keyID := credentialRecipientKeyIdentity(checkTime, entity)
 	fmt.Fprintln(w, "GnuPG WKD lookup (--auto-key-locate clear,wkd)")
-	fmt.Fprintf(w, "recipient %s; primary fingerprint %s; encryption fingerprint %s; encryption key %016X\n", credentialRecipient, credentialFingerprint, credentialEncryptionFingerprint, credentialEncryptionKeyID)
+	fmt.Fprintf(w, "recipient %s; primary fingerprint %s; encryption fingerprint %s; encryption key %016X\n", credentialRecipient, primary, encryption, keyID)
 	return nil
 }
 
@@ -247,20 +246,18 @@ func credentialSend(args []string, r io.Reader, w io.Writer, deps credentialSend
 	}
 	sum := sha256.Sum256(ciphertext)
 	receipt := credentialReceipt{
-		OperationID:           operationID,
-		MessageID:             credentialMessageID(operationID),
-		State:                 "pending",
-		Sender:                credentialSender,
-		Recipient:             credentialRecipient,
-		Channel:               credentialChannel,
-		KeyFingerprint:        credentialFingerprint,
-		EncryptionFingerprint: credentialEncryptionFingerprint,
-		SigningFingerprint:    credentialSigningFingerprint,
-		CiphertextSHA256:      hex.EncodeToString(sum[:]),
-		CiphertextBytes:       len(ciphertext),
-		AccountRefs:           append([]string(nil), accounts...),
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		OperationID:        operationID,
+		MessageID:          credentialMessageID(operationID),
+		State:              "pending",
+		Sender:             credentialSender,
+		Recipient:          credentialRecipient,
+		Channel:            credentialChannel,
+		SigningFingerprint: credentialSigningFingerprint,
+		CiphertextSHA256:   hex.EncodeToString(sum[:]),
+		CiphertextBytes:    len(ciphertext),
+		AccountRefs:        append([]string(nil), accounts...),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if err := saveCredentialReceipt(receiptPath, receipt); err != nil {
 		return fmt.Errorf("record pending credential delivery: %w", err)
@@ -284,7 +281,7 @@ func credentialSend(args []string, r io.Reader, w io.Writer, deps credentialSend
 	if err := saveCredentialReceipt(receiptPath, receipt); err != nil {
 		return &credentialExitError{message: "credential was submitted, but its receipt could not be finalized; do not retry this operation ID", code: 3}
 	}
-	fmt.Fprintf(w, "submitted %s to %s; signed by %s and encrypted to %s\n", operationID, credentialRecipient, credentialSigningFingerprint, credentialEncryptionFingerprint)
+	fmt.Fprintf(w, "submitted %s to %s; signed by %s and encrypted to the current validated WKD key\n", operationID, credentialRecipient, credentialSigningFingerprint)
 	fmt.Fprintf(w, "metadata-only receipt: %s\n", receiptPath)
 	fmt.Fprintln(w, "Reminder: rotate consequential credentials after they have served their purpose.")
 	return nil
@@ -323,19 +320,17 @@ func credentialReceive(args []string, r io.Reader, w io.Writer, deps credentialR
 	}
 	now := deps.now().UTC()
 	receipt := credentialReceipt{
-		OperationID:           metadata.OperationID,
-		MessageID:             metadata.MessageID,
-		State:                 "pending",
-		Sender:                credentialSender,
-		Recipient:             credentialRecipient,
-		Channel:               credentialChannel,
-		KeyFingerprint:        credentialFingerprint,
-		EncryptionFingerprint: credentialEncryptionFingerprint,
-		SigningFingerprint:    credentialSigningFingerprint,
-		CiphertextSHA256:      metadata.Hash,
-		CiphertextBytes:       len(metadata.Ciphertext),
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		OperationID:        metadata.OperationID,
+		MessageID:          metadata.MessageID,
+		State:              "pending",
+		Sender:             credentialSender,
+		Recipient:          credentialRecipient,
+		Channel:            credentialChannel,
+		SigningFingerprint: credentialSigningFingerprint,
+		CiphertextSHA256:   metadata.Hash,
+		CiphertextBytes:    len(metadata.Ciphertext),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if err := saveCredentialReceipt(receiptPath, receipt); err != nil {
 		return errors.New("record pending receiver receipt")
@@ -457,11 +452,11 @@ func lookupCredentialRecipientWKD(now time.Time) ([]byte, error) {
 	export.Stdout = &certificate
 	export.Stderr = diagnosticFile
 	if err := export.Run(); err != nil || ctx.Err() != nil || len(certificate.Bytes()) == 0 {
-		return nil, credentialGPGDiagnosticError("GnuPG could not export the pinned WKD key", err, ctx.Err(), diagnosticFile, gnupgHome)
+		return nil, credentialGPGDiagnosticError("GnuPG could not export the WKD key", err, ctx.Err(), diagnosticFile, gnupgHome)
 	}
 	result := append([]byte(nil), certificate.Bytes()...)
-	if _, err := credentialRecipientEntity(now, result, credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID); err != nil {
-		return nil, errors.New("GnuPG WKD result lacks the pinned recipient key")
+	if _, err := credentialRecipientEntity(now, result, credentialRecipient); err != nil {
+		return nil, errors.New("GnuPG WKD result lacks a valid recipient key")
 	}
 	return result, nil
 }
@@ -511,7 +506,7 @@ func resolveCredentialRecipientWKDCached(now time.Time, refresh bool, fetch func
 				if err != nil {
 					return nil, errors.New("WKD key cache is invalid; run credential key-check")
 				}
-				if _, err := credentialRecipientEntity(now, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID); err != nil {
+				if _, err := credentialRecipientEntity(now, certificate, credentialRecipient); err != nil {
 					return nil, errors.New("WKD key cache is invalid; run credential key-check")
 				}
 				return certificate, nil
@@ -528,14 +523,16 @@ func resolveCredentialRecipientWKDCached(now time.Time, refresh bool, fetch func
 		}
 		return nil, lookupErr
 	}
-	if _, err := credentialRecipientEntity(now, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID); err != nil {
-		lookupErr = errors.New("GnuPG WKD result lacks the pinned recipient key")
+	entity, err := credentialRecipientEntity(now, certificate, credentialRecipient)
+	if err != nil {
+		lookupErr = errors.New("GnuPG WKD result lacks a valid recipient key")
 		if saveErr := saveCredentialKeyFailure(cachePath, now); saveErr != nil {
 			return nil, fmt.Errorf("%w; could not persist WKD failure cache: %v", lookupErr, saveErr)
 		}
 		return nil, lookupErr
 	}
 	cache := newCredentialKeyCache("valid", certificate, now, now.Add(credentialWKDCacheTTL))
+	cache.KeyFingerprint, cache.EncryptionFingerprint, _ = credentialRecipientKeyIdentity(now, entity)
 	if err := saveCredentialKeyCache(cachePath, cache); err != nil {
 		return nil, fmt.Errorf("persist validated WKD key cache: %w", err)
 	}
@@ -552,24 +549,18 @@ func credentialKeyCachePath() (string, error) {
 
 func newCredentialKeyCache(state string, certificate []byte, cachedAt, expiresAt time.Time) credentialKeyCache {
 	return credentialKeyCache{
-		Version:               credentialKeyCacheVersion,
-		Recipient:             credentialRecipient,
-		State:                 state,
-		KeyFingerprint:        credentialFingerprint,
-		EncryptionFingerprint: credentialEncryptionFingerprint,
-		EncryptionKeyID:       fmt.Sprintf("%016X", credentialEncryptionKeyID),
-		Certificate:           base64.StdEncoding.EncodeToString(certificate),
-		CachedAt:              cachedAt.UTC(),
-		ExpiresAt:             expiresAt.UTC(),
+		Version:     credentialKeyCacheVersion,
+		Recipient:   credentialRecipient,
+		State:       state,
+		Certificate: base64.StdEncoding.EncodeToString(certificate),
+		CachedAt:    cachedAt.UTC(),
+		ExpiresAt:   expiresAt.UTC(),
 	}
 }
 
 func credentialKeyCacheMatches(cache credentialKeyCache) bool {
 	if cache.Version != credentialKeyCacheVersion ||
-		cache.Recipient != credentialRecipient ||
-		cache.KeyFingerprint != credentialFingerprint ||
-		cache.EncryptionFingerprint != credentialEncryptionFingerprint ||
-		cache.EncryptionKeyID != fmt.Sprintf("%016X", credentialEncryptionKeyID) {
+		cache.Recipient != credentialRecipient {
 		return false
 	}
 	lifetime := cache.ExpiresAt.Sub(cache.CachedAt)
@@ -692,7 +683,7 @@ func saveCredentialKeyCache(path string, cache credentialKeyCache) error {
 	return directory.Sync()
 }
 
-func credentialRecipientEntity(now time.Time, certificate []byte, fingerprint, recipient, encryptionFingerprint string, encryptionKeyID uint64) (*openpgp.Entity, error) {
+func credentialRecipientEntity(now time.Time, certificate []byte, recipient string) (*openpgp.Entity, error) {
 	var entities openpgp.EntityList
 	var err error
 	if bytes.HasPrefix(certificate, []byte("-----BEGIN PGP ")) {
@@ -712,9 +703,6 @@ func credentialRecipientEntity(now time.Time, certificate []byte, fingerprint, r
 			return nil, errors.New("recipient certificate must not contain private key material")
 		}
 	}
-	if strings.ToUpper(hex.EncodeToString(entity.PrimaryKey.Fingerprint)) != fingerprint {
-		return nil, errors.New("recipient certificate fingerprint mismatch")
-	}
 	validRecipientUID := false
 	for _, identity := range entity.Identities {
 		if identity.UserId == nil || identity.UserId.Email != recipient {
@@ -728,10 +716,15 @@ func credentialRecipientEntity(now time.Time, certificate []byte, fingerprint, r
 		return nil, errors.New("recipient certificate lacks a valid target email identity")
 	}
 	encryptionKey, ok := entity.EncryptionKey(now)
-	if !ok || encryptionKey.PublicKey == nil || encryptionKey.PublicKey.KeyId != encryptionKeyID || strings.ToUpper(hex.EncodeToString(encryptionKey.PublicKey.Fingerprint)) != encryptionFingerprint {
-		return nil, errors.New("recipient certificate lacks the pinned encryption key")
+	if !ok || encryptionKey.PublicKey == nil {
+		return nil, errors.New("recipient certificate lacks a valid encryption key")
 	}
 	return entity, nil
+}
+
+func credentialRecipientKeyIdentity(now time.Time, entity *openpgp.Entity) (string, string, uint64) {
+	encryptionKey, _ := entity.EncryptionKey(now)
+	return strings.ToUpper(hex.EncodeToString(entity.PrimaryKey.Fingerprint)), strings.ToUpper(hex.EncodeToString(encryptionKey.PublicKey.Fingerprint)), encryptionKey.PublicKey.KeyId
 }
 
 func sealCredentialEntityTo(inner []byte, now time.Time, recipient, signer *openpgp.Entity) ([]byte, error) {
@@ -773,7 +766,7 @@ func signAndEncryptCredentialGPG(inner []byte, now time.Time) ([]byte, error) {
 }
 
 func signAndEncryptCredentialGPGWithRecipient(inner []byte, now time.Time, certificate []byte) ([]byte, error) {
-	if _, err := credentialRecipientEntity(now, certificate, credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID); err != nil {
+	if _, err := credentialRecipientEntity(now, certificate, credentialRecipient); err != nil {
 		return nil, err
 	}
 	if len(inner) == 0 || !hasCanonicalCRLF(inner) {
@@ -817,7 +810,7 @@ func signAndEncryptCredentialGPGWithRecipient(inner []byte, now time.Time, certi
 	armored.limit = credentialWireLimit
 	command.Stdout = &armored
 	if err := command.Run(); err != nil || ctx.Err() != nil {
-		return nil, errors.New("GnuPG could not sign and encrypt with the pinned key")
+		return nil, errors.New("GnuPG could not sign and encrypt with the validated WKD key")
 	}
 	result := canonicalCRLF(bytes.TrimSpace(armored.Bytes()))
 	if err := validateCredentialArmor(result); err != nil {
@@ -990,8 +983,8 @@ func validateCredentialArmor(ciphertext []byte) error {
 		return errors.New("OpenPGP recipient packet is invalid")
 	}
 	encryptedKey, ok := first.(*packet.EncryptedKey)
-	if !ok || encryptedKey.KeyId != credentialEncryptionKeyID {
-		return errors.New("OpenPGP message is not encrypted solely to the pinned recipient key")
+	if !ok || encryptedKey.KeyId == 0 {
+		return errors.New("OpenPGP message does not have one explicit recipient key")
 	}
 	second, err := packetReader.Next()
 	if err != nil {
@@ -1177,7 +1170,7 @@ func credentialWKDExportArguments(home string) []string {
 	return []string{
 		"--no-options", "--homedir", home,
 		"--batch", "--no-tty", "--export-options", "export-minimal",
-		"--export", credentialFingerprint,
+		"--export", credentialRecipient,
 	}
 }
 

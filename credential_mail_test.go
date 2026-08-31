@@ -68,24 +68,18 @@ func TestCredentialEncryptionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCredentialEncryptionRejectsTrustDriftAndPrivateMaterial(t *testing.T) {
+func TestCredentialEncryptionRejectsWrongUIDAndPrivateMaterial(t *testing.T) {
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
-	entity, certificate, fingerprint, _, encryptionFingerprint, keyID := credentialFixtureEntity(t, now)
+	entity, certificate, _, _, _, _ := credentialFixtureEntity(t, now)
 	for _, test := range []struct {
-		name                  string
-		certificate           []byte
-		fingerprint           string
-		recipient             string
-		encryptionFingerprint string
-		keyID                 uint64
+		name        string
+		certificate []byte
+		recipient   string
 	}{
-		{name: "primary fingerprint", certificate: certificate, fingerprint: strings.Repeat("0", 40), recipient: "fixture@example.com", encryptionFingerprint: encryptionFingerprint, keyID: keyID},
-		{name: "recipient UID", certificate: certificate, fingerprint: fingerprint, recipient: "other@example.com", encryptionFingerprint: encryptionFingerprint, keyID: keyID},
-		{name: "encryption fingerprint", certificate: certificate, fingerprint: fingerprint, recipient: "fixture@example.com", encryptionFingerprint: strings.Repeat("0", 40), keyID: keyID},
-		{name: "encryption key ID", certificate: certificate, fingerprint: fingerprint, recipient: "fixture@example.com", encryptionFingerprint: encryptionFingerprint, keyID: keyID + 1},
+		{name: "recipient UID", certificate: certificate, recipient: "other@example.com"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := credentialRecipientEntity(now, test.certificate, test.fingerprint, test.recipient, test.encryptionFingerprint, test.keyID); err == nil {
+			if _, err := credentialRecipientEntity(now, test.certificate, test.recipient); err == nil {
 				t.Fatal("trust drift was accepted")
 			}
 		})
@@ -101,7 +95,7 @@ func TestCredentialEncryptionRejectsTrustDriftAndPrivateMaterial(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := credentialRecipientEntity(now, private.Bytes(), fingerprint, "fixture@example.com", encryptionFingerprint, keyID); err == nil || !strings.Contains(err.Error(), "private key material") {
+	if _, err := credentialRecipientEntity(now, private.Bytes(), "fixture@example.com"); err == nil || !strings.Contains(err.Error(), "private key material") {
 		t.Fatalf("private certificate error = %v", err)
 	}
 }
@@ -122,7 +116,7 @@ func TestCredentialWKDArgumentsAreIsolatedAndPinned(t *testing.T) {
 	wantExport := []string{
 		"--no-options", "--homedir", "/fixture/isolated-gnupg",
 		"--batch", "--no-tty", "--export-options", "export-minimal",
-		"--export", credentialFingerprint,
+		"--export", credentialRecipient,
 	}
 	if got := credentialWKDExportArguments("/fixture/isolated-gnupg"); !reflect.DeepEqual(got, wantExport) {
 		t.Fatalf("WKD export args = %#v, want %#v", got, wantExport)
@@ -159,7 +153,7 @@ func TestCredentialWKDCacheHonorsTTLAndRemembersFailures(t *testing.T) {
 		if err != nil || !found {
 			t.Fatalf("load cache: found=%v err=%v", found, err)
 		}
-		if cache.EncryptionFingerprint != credentialEncryptionFingerprint {
+		if cache.EncryptionFingerprint == "" {
 			t.Fatalf("cached encryption fingerprint = %q", cache.EncryptionFingerprint)
 		}
 		cache.ExpiresAt = cache.CachedAt.Add(credentialWKDCacheTTL + time.Second)
@@ -210,7 +204,7 @@ func TestCredentialWKDCacheHonorsTTLAndRemembersFailures(t *testing.T) {
 			calls++
 			return wrongKey, nil
 		}
-		if _, err := resolveCredentialRecipientWKDCached(now, false, fetch); err == nil || !strings.Contains(err.Error(), "lacks the pinned recipient key") {
+		if _, err := resolveCredentialRecipientWKDCached(now, false, fetch); err == nil || !strings.Contains(err.Error(), "lacks a valid recipient key") {
 			t.Fatalf("wrong-key error = %v", err)
 		}
 		if _, err := resolveCredentialRecipientWKDCached(now.Add(time.Second), false, fetch); err == nil || !strings.Contains(err.Error(), "suppressed after a recent failure") {
@@ -293,7 +287,12 @@ func TestCredentialKeyCheckReportsOnlyPublicMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"GnuPG WKD lookup", credentialRecipient, credentialFingerprint, credentialEncryptionFingerprint, fmt.Sprintf("%016X", credentialEncryptionKeyID)} {
+	entity, err := credentialRecipientEntity(now, credentialWKDTestKey(t), credentialRecipient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, encryption, keyID := credentialRecipientKeyIdentity(now, entity)
+	for _, want := range []string{"GnuPG WKD lookup", credentialRecipient, primary, encryption, fmt.Sprintf("%016X", keyID)} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("key check output misses %q: %s", want, output.String())
 		}
@@ -393,7 +392,7 @@ func TestCredentialSendRecordsMetadataAndNeverResubmits(t *testing.T) {
 	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
 		t.Fatal(err)
 	}
-	if receipt.State != "submitted" || receipt.Recipient != credentialRecipient || receipt.KeyFingerprint != credentialFingerprint || receipt.EncryptionFingerprint != credentialEncryptionFingerprint || receipt.SigningFingerprint != credentialSigningFingerprint || len(receipt.AccountRefs) != 2 {
+	if receipt.State != "submitted" || receipt.Recipient != credentialRecipient || receipt.KeyFingerprint != "" || receipt.EncryptionFingerprint != "" || receipt.SigningFingerprint != credentialSigningFingerprint || len(receipt.AccountRefs) != 2 {
 		t.Fatalf("unexpected receipt: %#v", receipt)
 	}
 	receiptInfo, err := os.Stat(receiptPath)
@@ -542,7 +541,7 @@ func TestCredentialReceiverSubmitsOnceAndDeduplicates(t *testing.T) {
 	}
 }
 
-func TestCredentialReceiverRejectsOuterLeaksAndOtherRecipientKeys(t *testing.T) {
+func TestCredentialReceiverRejectsOuterLeaksAndAcceptsRotatedRecipientKeys(t *testing.T) {
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
 	inner, err := buildCredentialInnerEntity([]byte("header-leak-sentinel"))
 	if err != nil {
@@ -569,8 +568,8 @@ func TestCredentialReceiverRejectsOuterLeaksAndOtherRecipientKeys(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCredentialArmor(fixtureArmor); err == nil || !strings.Contains(err.Error(), "pinned recipient") {
-		t.Fatalf("wrong recipient armor error = %v", err)
+	if err := validateCredentialArmor(fixtureArmor); err != nil {
+		t.Fatalf("rotated recipient armor error = %v", err)
 	}
 }
 
@@ -702,8 +701,8 @@ func TestCredentialGPGSignsAndEncryptsToWKDKeyWhenSignerIsAvailable(t *testing.T
 		t.Fatal(err)
 	}
 	encryptedKey, ok := first.(*packet.EncryptedKey)
-	if !ok || encryptedKey.KeyId != credentialEncryptionKeyID {
-		t.Fatalf("encrypted key packet = %#v, want key ID %016X", first, credentialEncryptionKeyID)
+	if !ok || encryptedKey.KeyId == 0 {
+		t.Fatalf("encrypted key packet = %#v, want an explicit key ID", first)
 	}
 }
 
@@ -754,7 +753,7 @@ func credentialWKDTestKey(t *testing.T) []byte {
 
 func credentialProductionTestSeal(t *testing.T, inner []byte, now time.Time) ([]byte, error) {
 	t.Helper()
-	recipient, err := credentialRecipientEntity(now, credentialWKDTestKey(t), credentialFingerprint, credentialRecipient, credentialEncryptionFingerprint, credentialEncryptionKeyID)
+	recipient, err := credentialRecipientEntity(now, credentialWKDTestKey(t), credentialRecipient)
 	if err != nil {
 		return nil, err
 	}

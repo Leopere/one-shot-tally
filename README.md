@@ -71,7 +71,7 @@ only to improve a score.
 | 1.13.7 | Stop reentry handling could keep blocking repeatedly when delivery was unresolved. | Keep unresolved delivery in a single-stop continuation: `Stop` can block once with delivery steer, then retain unresolved evidence and guidance on reentry while never blocking again. |
 | 1.14.0 | Explicit credential delivery lacked a narrow compiled path and could stall on generic safety concerns. | Read plaintext only from stdin, sign and encrypt with pinned keys, submit through the restricted fixed-recipient transport, and record metadata without recording plaintext. |
 | 1.15.0 | The credential path used an embedded recipient certificate instead of the recipient's current DNS record. | Fetch the RFC 7929 OPENPGPKEY record through DNS-over-HTTPS, require a DNSSEC Secure answer and the pinned fingerprint, and give the fetched key directly to GnuPG. |
-| 1.16.0 | The DNS record and older local certificate did not match the key returned by a clean GnuPG WKD lookup, so SnappyMail could not decrypt test messages. | Let GnuPG perform an isolated `clear,wkd` lookup, pin the returned primary key and encryption subkey, and cache only the validated minimal certificate. |
+| 1.16.0 | The DNS record and older local certificate did not match the key returned by a clean GnuPG WKD lookup, so SnappyMail could not decrypt test messages. | Let GnuPG perform an isolated `clear,wkd` lookup and cache only a minimal certificate with a valid exact-recipient UID and encryption key. Exact recipient fingerprints are debugging evidence, not production policy. |
 
 ## Encrypted credential delivery
 
@@ -81,12 +81,11 @@ Check the recipient key without reading or sending a credential:
 one-shot-tally credential key-check
 ```
 
-The check runs the pinned GnuPG binary with a new private home directory and
+The check runs the trusted GnuPG binary with a new private home directory and
 `--auto-key-locate clear,wkd --locate-external-key colin.knapp@boompay.ca`.
-It exports only primary fingerprint
-`6183F2DE176E9D46EDB602951B7D7262C3D0207D`, then requires the exact recipient
-UID and encryption-subkey fingerprint
-`9E5310E1F125CC2696E2C0385FE016062B506A77` (key ID `5FE016062B506A77`). A
+It exports the WKD result for the exact recipient address, then requires a valid
+self-certified recipient UID and a valid encryption-capable key. It reports the
+observed fingerprints for diagnostics but does not pin them in production. A
 missing, malformed, expired, or mismatched result stops the operation. There is
 no embedded-key, recipient-keyring, DNS-record, keyserver, plaintext, or
 `gmail-cli` fallback.
