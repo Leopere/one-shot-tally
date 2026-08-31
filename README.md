@@ -17,7 +17,7 @@ maintain your own version, and tune its messages, thresholds, weights, and
 recognized commands as your evidence changes. Keep the tests with your policy
 so a scoring change does not silently change agent behavior.
 
-Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). Licensed under [Creative Commons Attribution 4.0 International](LICENSE).
+Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved. This project is proprietary; see [LICENSE](LICENSE).
 
 When you share or adapt this work, credit ColinKnapp.com, link the license, and state whether you changed the work.
 
