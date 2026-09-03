@@ -1,8 +1,8 @@
 # one-shot-tally
 
-`one-shot-tally` records observable Codex work. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
+`one-shot-tally` coaches Codex through a work cycle and records what happened. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
 
-Use the record to find repeated calls, passive waits, redundant tests, unfinished background work, and missing checks. The tally does not interpret intent or direct the agent.
+The coach spots repeated calls, passive waits, redundant tests, unfinished background work, and missing checks. Its prompts are short and practical. It never blocks an action.
 
 Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved. See [LICENSE](LICENSE).
 
@@ -17,17 +17,18 @@ The activity score is diagnostic. It does not change the recorded outcome.
 
 ## Hook behavior
 
-- `SessionStart` updates goal state without adding instructions.
-- `UserPromptSubmit` is silent.
-- `PreToolUse` records calls silently. It never changes or authorizes a command.
-- `PostToolUse` records explicit structured results, such as an exit code. Plain output text is not proof of success.
-- `Stop` returns one short status after it records the final state. A repeated Stop hook returns no text.
+- `SessionStart` reminds the agent to finish, verify, and use `ship-it` for repository changes.
+- `UserPromptSubmit` notices corrections and gives a brief realignment prompt.
+- `PreToolUse` gives paced coaching for repeated calls, failed checks, passive waits, detached jobs, external changes, and delivery.
+- For canonical Bash tests and delivery commands, `PreToolUse` adds a private result marker. The wrapper preserves the command and its exit status.
+- `PostToolUse` records explicit structured results or the matching private marker. Ordinary output text is not proof of success.
+- `Stop` reports the detailed tally and one clear next step. It never returns `decision:block`.
 
-`SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` return `{}`. Hooks do not add instructions, rewrite commands, block actions, or start other commands. Run `status` or `grade` to read the full result.
+Goal mode does not score tool-call volume. The coach can tell the agent to run `ship-it`, but it does not start a delivery command itself.
 
 ## Language rules
 
-Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English for documentation and command output.
+Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English for documentation, command output, and hook coaching.
 
 - Lead with the result.
 - Use short, direct sentences.
@@ -35,9 +36,8 @@ Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English
 - Put a condition before its action.
 - Use the same term for the same item.
 - Keep exact command names, identifiers, and security terms.
-- Keep instructions, policy, and coaching out of hook responses.
-
-These rules guide the writing. They do not claim ASD-STE100 certification.
+- Keep coaching short and practical.
+- Avoid legal and policy wording unless an exact field or command requires it.
 
 ## Commands
 
@@ -149,4 +149,4 @@ go test ./...
 go build ./...
 ```
 
-Keep tests focused on behavior: silent ordinary events, concise status, explicit result evidence, revision ordering, and credential transport boundaries.
+Keep tests focused on coaching cadence, plain language, result evidence, revision ordering, and credential transport boundaries.

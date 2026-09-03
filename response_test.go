@@ -103,7 +103,7 @@ func TestUnknownEditResponseCannotVerifyOrFail(t *testing.T) {
 		})
 		out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": turn, "hook_event_name": "Stop"})
 		text := string(mustJSON(out))
-		if !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") || strings.Contains(text, "Tally: FAILED") {
+		if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") || strings.Contains(text, "Recorded outcome: FAILED") {
 			t.Fatalf("unknown edit response %d was guessed: %#v", index, out)
 		}
 	}
@@ -142,7 +142,7 @@ func TestSuccessfulNoOpEditDoesNotCreateVerifiedRevision(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "no-op-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("successful no-op edit was treated as a changed revision: %#v", out)
 	}
 }
@@ -170,7 +170,7 @@ func TestObservedWorktreeChangeCanConfirmOpaqueEditResponse(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "opaque-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("observed edit plus explicit passing test was not verified: %#v", out)
 	}
 }
@@ -219,7 +219,7 @@ func TestUnknownTestResultNeverVerifiesEdit(t *testing.T) {
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-test", "hook_event_name": "Stop"})
 	text := string(mustJSON(out))
-	if !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") || strings.Contains(text, "ship-ready") {
+	if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") || strings.Contains(text, "ship-ready") {
 		t.Fatalf("unknown test result verified edit: %#v", out)
 	}
 }
@@ -235,7 +235,7 @@ func TestKnownFailedCommandReportsFailed(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "command", "tool_response": map[string]any{"exit_code": 1},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failed-command", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: FAILED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: FAILED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("failed command outcome: %#v", out)
 	}
 }
@@ -259,7 +259,7 @@ func TestShellMutationIsActivityEvenAfterPassingCheck(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "shell-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("untracked shell mutation was verified: %#v", out)
 	}
 }
@@ -310,7 +310,7 @@ func TestMixedEditBypassDoesNotRemainVerifiedAfterShellMutation(t *testing.T) {
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "mixed-edit", "hook_event_name": "Stop"})
 	text := string(mustJSON(out))
-	if !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("mixed edit path should not stay VERIFIED: %#v", out)
 	}
 	hook(t, dir, map[string]any{
@@ -322,7 +322,7 @@ func TestMixedEditBypassDoesNotRemainVerifiedAfterShellMutation(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "retest", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "mixed-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("observed shell mutation could not be verified by a later test: %#v", out)
 	}
 }
@@ -366,7 +366,7 @@ func TestFailedShellMutationCannotBeRescuedByLaterPassingTest(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "later-test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failed-shell-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: FAILED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: FAILED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("failed shell mutation was hidden by a later test: %#v", out)
 	}
 }
@@ -392,7 +392,7 @@ func TestShellChainedTestResultIsNotAuthoritative(t *testing.T) {
 				"tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0},
 			})
 			out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": command, "hook_event_name": "Stop"})
-			if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+			if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 				t.Fatalf("ambiguous shell chain verified an edit: %#v", out)
 			}
 			if state := loadTestState(t, dir); state.Tests != 0 {
@@ -422,7 +422,7 @@ func TestTestStartedBeforeEditCompletionCannotVerify(t *testing.T) {
 		"tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("test that overlapped an incomplete edit verified it: %#v", out)
 	}
 }
@@ -498,7 +498,7 @@ func TestStaleEditResultCannotOverrideNewerObservedEdit(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stale-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: LOCAL CHECK PASSED") || strings.Contains(text, "Tally: FAILED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: VERIFIED") || strings.Contains(text, "Recorded outcome: FAILED") {
 		t.Fatalf("stale edit completion overrode newer edit: %#v", out)
 	}
 }
@@ -540,7 +540,7 @@ func TestKnownPreTestSnapshotRequiresKnownPostSnapshot(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "snapshot-loss", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
 		t.Fatalf("missing post-test snapshot was treated as unchanged: %#v", out)
 	}
 }

@@ -1,6 +1,6 @@
 ---
 name: one-shot-tally
-description: Use one-shot-tally for concise work status, goal recovery, background jobs, and durable TODOs.
+description: Use one-shot-tally for concise work coaching, status, goal recovery, background jobs, and durable TODOs.
 ---
 
 # One-Shot Tally
@@ -28,18 +28,18 @@ one-shot-tally help|-h|--help
 
 ## Behavior
 
-The hook records activity, checks, delivery, background work, and TODOs. It does not direct work.
+The hook coaches the work cycle and records activity, checks, delivery, background work, and TODOs. It never blocks an action.
 
 - `NO OBSERVED WORK`: no tool activity.
 - `ACTIVITY OBSERVED`: activity without verified current edits.
 - `FAILED`: an explicit unresolved failure.
 - `VERIFIED`: the current edit completed and a later standalone local check passed.
 
-`SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` return `{}`. `Stop` returns one factual status. A repeated Stop hook returns `{}`.
+`SessionStart` reminds the agent to finish, verify, and use `ship-it` for repository changes. `UserPromptSubmit` notices corrections.
 
-Hooks do not inject instructions, rewrite commands, block actions, or start commands.
+`PreToolUse` gives short, paced prompts for repeated calls, failed checks, passive waits, detached jobs, external changes, and delivery. For canonical Bash tests and delivery commands, it adds a private result marker without changing command meaning or exit status.
 
-Run `status` or `grade` to read the recorded result. `PostToolUse` accepts explicit structured results, such as an exit code. Plain output text is not proof.
+`PostToolUse` accepts explicit structured results or the matching private marker. Ordinary output text is not proof. At `Stop`, report the detailed tally and one clear next step.
 
 ## Language
 
@@ -50,9 +50,8 @@ Use `$microsoft-writing-style` and `$sop-ste100-rewriter` for prose changes in t
 - Use one instruction per sentence or list item.
 - Put a condition before its action.
 - Keep exact command names, identifiers, and security terms.
-- Keep coaching and policy text out of hook responses.
-
-Use ASD-STE100 as a writing guide. Do not claim certification.
+- Keep coaching short and practical.
+- Avoid legal and policy wording unless an exact field or command requires it.
 
 Use `background complete ID --wake` only from the detached job. Manual completion omits `--wake`.
 
