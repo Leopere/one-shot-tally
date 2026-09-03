@@ -1,8 +1,8 @@
 # one-shot-tally
 
-`one-shot-tally` records observable Codex work and returns a short status at Stop. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
+`one-shot-tally` records observable Codex work. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
 
-The record helps identify repeated calls, passive waiting, redundant tests, unfinished background work, and missing verification. It does not understand product intent, prove service health, decide whether a goal is complete, or block an agent from stopping.
+Use the record to find repeated calls, passive waits, redundant tests, unfinished background work, and missing checks. The tally does not interpret intent or direct the agent.
 
 Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved. See [LICENSE](LICENSE).
 
@@ -11,7 +11,7 @@ Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved.
 - `NO OBSERVED WORK`: no tool activity was recorded.
 - `ACTIVITY OBSERVED`: activity occurred without verified current edits.
 - `FAILED`: a recorded action or check has an explicit unresolved failure.
-- `VERIFIED`: the current edit completed and a later standalone local check passed without changing the Git-visible worktree. Stop reports this as `LOCAL CHECK PASSED`.
+- `VERIFIED`: the current edit completed and a later standalone local check passed without changing the Git-visible worktree.
 
 The activity score is diagnostic. It does not change the recorded outcome.
 
@@ -21,9 +21,23 @@ The activity score is diagnostic. It does not change the recorded outcome.
 - `UserPromptSubmit` is silent.
 - `PreToolUse` records calls silently. It never changes or authorizes a command.
 - `PostToolUse` records explicit structured results, such as an exit code. Plain output text is not proof of success.
-- `Stop` gives a short outcome and delivery status. Detailed metrics remain available through `status` and `grade`. Stop never returns `decision:block`.
+- `Stop` returns one short status after it records the final state. A repeated Stop hook returns no text.
 
-Goal mode does not score tool-call volume. The hook records delivery state but does not direct or start `ship-it`, `deploy-it`, or any other delivery command.
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` return `{}`. Hooks do not add instructions, rewrite commands, block actions, or start other commands. Run `status` or `grade` to read the full result.
+
+## Language rules
+
+Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English for documentation and command output.
+
+- Lead with the result.
+- Use short, direct sentences.
+- Use one instruction per sentence or list item.
+- Put a condition before its action.
+- Use the same term for the same item.
+- Keep exact command names, identifiers, and security terms.
+- Keep instructions, policy, and coaching out of hook responses.
+
+These rules guide the writing. They do not claim ASD-STE100 certification.
 
 ## Commands
 
@@ -60,7 +74,7 @@ Let the detached job report completion:
 one-shot-tally background complete docs-build --wake
 ```
 
-`record` captures `$TMUX_PANE` when available. `complete` is idempotent. Only the detached job uses `--wake`; manual completion omits it. Cleanup commands stay in state and are not injected into terminal input.
+`record` captures `$TMUX_PANE` when available. `complete` is idempotent. Use `--wake` only from the detached job. Cleanup commands stay in state. The hook does not type cleanup commands into a terminal.
 
 ## Deferred TODOs
 
@@ -79,7 +93,7 @@ one-shot-tally goal show ID
 one-shot-tally goal resume ID
 ```
 
-Add `--all` to include completed goals. `goal resume` prints the stored objective. The command reads Codex goal history but does not change goal state.
+Add `--all` to include completed goals. `goal resume` prints the stored objective and the next two commands. The command does not change goal state.
 
 ## Encrypted credential delivery
 

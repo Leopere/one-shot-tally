@@ -28,16 +28,31 @@ one-shot-tally help|-h|--help
 
 ## Behavior
 
-The hook records activity, checks, delivery, background work, and TODOs. Its status is advisory. It never decides whether the user's task is complete and never blocks `Stop`, Git, `ship-it`, or `deploy-it`.
+The hook records activity, checks, delivery, background work, and TODOs. It does not direct work.
 
 - `NO OBSERVED WORK`: no tool activity.
 - `ACTIVITY OBSERVED`: activity without verified current edits.
 - `FAILED`: an explicit unresolved failure.
-- `VERIFIED`: the current edit completed and a later standalone local check passed. Stop reports this as `LOCAL CHECK PASSED`.
+- `VERIFIED`: the current edit completed and a later standalone local check passed.
 
-`PreToolUse` never changes or authorizes a command. `PostToolUse` accepts explicit structured results, such as an exit code. Plain output text is not proof.
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` return `{}`. `Stop` returns one factual status. A repeated Stop hook returns `{}`.
 
-`SessionStart`, `UserPromptSubmit`, and ordinary `PreToolUse` events add no instructions. At Stop, report only the outcome and delivery state. Detailed metrics stay in `status` and `grade`.
+Hooks do not inject instructions, rewrite commands, block actions, or start commands.
+
+Run `status` or `grade` to read the recorded result. `PostToolUse` accepts explicit structured results, such as an exit code. Plain output text is not proof.
+
+## Language
+
+Use `$microsoft-writing-style` and `$sop-ste100-rewriter` for prose changes in this repository.
+
+- Lead with the result.
+- Use short, active sentences.
+- Use one instruction per sentence or list item.
+- Put a condition before its action.
+- Keep exact command names, identifiers, and security terms.
+- Keep coaching and policy text out of hook responses.
+
+Use ASD-STE100 as a writing guide. Do not claim certification.
 
 Use `background complete ID --wake` only from the detached job. Manual completion omits `--wake`.
 
@@ -53,10 +68,12 @@ Use `credential send` only when the user asks to send a credential to `colin.kna
 
 ## Resume a goal
 
-1. Call `get_goal`. Keep an unfinished current goal.
-2. Otherwise, list goals and select the requested ID.
-3. Run `one-shot-tally goal resume ID`.
-4. Call `create_goal` with the printed objective.
+1. Call `get_goal`.
+2. If a goal is active, continue that goal.
+3. If no goal is active, list the saved goals.
+4. Select the required goal ID.
+5. Run `one-shot-tally goal resume ID`.
+6. Call `create_goal` with the printed objective.
 
 The command reads Codex goal history. It does not change Codex goal state.
 

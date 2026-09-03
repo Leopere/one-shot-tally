@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.18.0"
+const binaryVersion = "1.19.0"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -239,7 +239,7 @@ func printVersion(w io.Writer) {
 }
 
 func printHelp(w io.Writer) {
-	fmt.Fprintln(w, "one-shot-tally - activity and delivery status hook")
+	fmt.Fprintln(w, "one-shot-tally - record Codex activity and delivery status")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  one-shot-tally                  process a hook event from stdin")
@@ -256,7 +256,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally todo done ID      complete one deferred item")
 	fmt.Fprintln(w, "  one-shot-tally goal list [--all] list resumable goals, or all goals")
 	fmt.Fprintln(w, "  one-shot-tally goal show ID      print a previous goal")
-	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the exact create_goal handoff")
+	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the saved goal instructions")
 	fmt.Fprintln(w, "  one-shot-tally credential key-check")
 	fmt.Fprintln(w, "                                  verify the pinned GnuPG WKD recipient key")
 	fmt.Fprintln(w, "  one-shot-tally credential send --operation-id UUID --account REF")
@@ -264,8 +264,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Status and scores report observed events; they do not direct work.")
-	fmt.Fprintln(w, "Use goal resume to print a saved objective for create_goal.")
+	fmt.Fprintln(w, "Hooks record facts and return no instructions.")
+	fmt.Fprintln(w, "Run status when you want a readable report.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -656,18 +656,14 @@ func stop(e event, w io.Writer) error {
 	}
 	message := "Tally: " + outcome + "."
 	if goalActive {
-		message += " Goal remains active."
+		message += " Goal: active."
 	}
-	stewardship := ""
 	if s.BackgroundRecords > s.BackgroundCompletions {
-		stewardship = " Background work remains recorded."
+		message += " Background jobs: pending."
 	}
-	closure := closingLoop(s, deployContract)
-	message += stewardship + closure
-	if requiredDeliveryPending(s) || goalActive || !finalPassed(s) {
-		return writeJSON(w, hookOutput{SystemMessage: message})
-	}
-	if !s.RecordedInLifetime {
+	message += closingLoop(s, deployContract)
+	complete := !requiredDeliveryPending(s) && !goalActive && finalPassed(s)
+	if complete && !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
 			return err
 		}
@@ -675,6 +671,9 @@ func stop(e event, w io.Writer) error {
 		if err := save(p, s); err != nil {
 			return err
 		}
+	}
+	if e.StopHookActive {
+		return writeJSON(w, hookOutput{})
 	}
 	return writeJSON(w, hookOutput{SystemMessage: message})
 }
@@ -685,53 +684,53 @@ func closingLoop(s state, deployContract bool) string {
 		return " Delivery: deploy-it failed."
 	}
 	if attempted && known && !succeeded && kind == "ship" {
-		return " Delivery: ship-it failed; Git may already be shipped."
+		return " Delivery: ship-it failed; Git status is unknown."
 	}
 	if attempted && !known && kind == "deploy" {
 		return " Delivery: deploy-it returned no result."
 	}
 	if attempted && !known && kind == "ship" {
-		return " Delivery: ship-it returned no result; Git may already be shipped."
+		return " Delivery: ship-it returned no result; Git status is unknown."
 	}
 	if attempted && known && !succeeded {
-		return " Delivery failed."
+		return " Delivery: failed."
 	}
 	if attempted && !known {
-		return " Delivery returned no result."
+		return " Delivery: result unknown."
 	}
 	if s.Revision == 0 {
 		return ""
 	}
 	if !currentEditReady(s) {
-		return " The latest edit result is not confirmed."
+		return " Edit result: unknown."
 	}
 	if !finalPassed(s) {
-		return " Current changes are not verified."
+		return " Checks: current changes are not verified."
 	}
 	if recoveredCurrentDeployment(s) {
 		return " Delivery: shipping and deployment recorded."
 	}
 	if shippedCurrentRevision(s) {
 		if deployContract {
-			return " Delivery: shipping recorded; deployment state is not recorded."
+			return " Delivery: shipping recorded; deployment result unknown."
 		}
-		return " Delivery: shipping recorded; no tracked deployment contract."
+		return " Delivery: shipping recorded; no deployment contract."
 	}
 	return " Delivery: not recorded for the verified revision."
 }
 
 func reportLine(s state) string {
-	mode := ""
+	mode := "standard"
 	meaning := "diagnostic"
 	if s.GoalScoped {
-		mode = " | Run mode: /goal (high tool-call volume expected)"
+		mode = "/goal; tool-call volume is not scored"
 		meaning = "diagnostic; tool-call volume not scored"
 	}
 	score := fmt.Sprintf("%d/100 (%s)", numericScore(s), meaning)
 	if !hasRecordedActivity(s) {
 		score = "N/A (no observed work)"
 	}
-	return fmt.Sprintf("Recorded outcome: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %d unknown, %s total, %s redundant) | Delivery actions: %d completed (%d shipped, %d deployed) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Activity score: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, score)
+	return fmt.Sprintf("Outcome: %s\nMode: %s\nTool calls: %d total; %d Spark; %s weighted\nChecks: %d total; %d passed; %d failed; %d unknown; %s elapsed; %s repeated\nDelivery: %d completed; %d shipped; %d deployed\nBackground: %d recorded; %d completed; %d passive waits\nTODOs: %d saved; %d completed\nActivity score: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, score)
 }
 
 func numericScore(s state) int {
@@ -1502,11 +1501,11 @@ func goalCommand(args []string, w io.Writer) error {
 			printCodexGoal(goal, w)
 			return nil
 		}
-		fmt.Fprintf(w, "Resume saved goal %s (previous status: %s).\n\n%s\n\nCall get_goal first; do not replace an unfinished current goal. Then call create_goal with that exact objective", goal.GoalID, goal.Status, goal.Objective)
+		fmt.Fprintf(w, "Saved goal: %s\nPrevious status: %s\n\nObjective:\n%s\n\nNext steps:\n1. Call get_goal.\n2. If no goal is active, call create_goal with this objective", goal.GoalID, goal.Status, goal.Objective)
 		if goal.TokenBudget != nil {
 			fmt.Fprintf(w, " and token_budget %d", *goal.TokenBudget)
 		}
-		fmt.Fprintln(w, ". This command does not change Codex goal state.")
+		fmt.Fprintln(w, ".\n\nThis command only reads saved goal data.")
 		return nil
 	default:
 		return fmt.Errorf("unknown goal command %q", args[0])
@@ -1727,7 +1726,7 @@ func recordBackground(args []string, w io.Writer) error {
 	if err := saveBackgroundJobs(jobs); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "Recorded background job %s. Arrange detached completion with: one-shot-tally background complete %s --wake\n", id, id)
+	fmt.Fprintf(w, "Recorded background job %s.\nCompletion command: one-shot-tally background complete %s --wake\n", id, id)
 	return nil
 }
 
@@ -1765,10 +1764,10 @@ func completeBackground(args []string, w io.Writer) error {
 	if wake && job.TmuxTarget != "" {
 		message := fmt.Sprintf("Background job %s completed.", job.ID)
 		if err := exec.Command("tmux", "send-keys", "-l", "-t", job.TmuxTarget, message).Run(); err != nil {
-			return fmt.Errorf("job recorded complete, but its one wake attempt failed and will not be retried automatically: %w", err)
+			return fmt.Errorf("background job is complete; the wake command failed: %w", err)
 		}
 		if err := exec.Command("tmux", "send-keys", "-t", job.TmuxTarget, "Enter").Run(); err != nil {
-			return fmt.Errorf("job recorded complete, but its one Enter attempt failed and will not be retried automatically: %w", err)
+			return fmt.Errorf("background job is complete; tmux could not send Enter: %w", err)
 		}
 	}
 	fmt.Fprintf(w, "Completed background job %s; cleanup: %s\n", job.ID, job.Cleanup)
@@ -1856,13 +1855,13 @@ func addTodo(text, context string, w io.Writer) error {
 		return err
 	}
 	if _, exists := items[id]; exists {
-		return fmt.Errorf("TODO %s already exists; do not duplicate deferred work", id)
+		return fmt.Errorf("TODO %s already exists", id)
 	}
 	items[id] = todoItem{ID: id, Text: text, Context: context, Source: source, CreatedAt: time.Now().UTC()}
 	if err := saveTodos(items); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "Parked TODO %s: %s. Return to the current goal.\n", id, text)
+	fmt.Fprintf(w, "Saved TODO %s: %s\n", id, text)
 	return nil
 }
 
@@ -2027,7 +2026,7 @@ func printLatestTo(w io.Writer, asJSON bool) error {
 	}
 	fmt.Fprintln(w, reportLine(s))
 	if life.Runs > 0 {
-		fmt.Fprintf(w, "Lifetime: Verified revisions since 1.12: %d | Historical verified/successful runs: %d/%d | Average activity score: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
+		fmt.Fprintf(w, "\nLifetime\nVerified revisions since 1.12: %d\nVerified runs: %d of %d\nAverage activity score: %.1f/100\nChecks: %d total; %d failed; %s elapsed\nTool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
 	}
 	return nil
 }
