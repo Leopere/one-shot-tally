@@ -13,12 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-const binaryVersion = "1.20.0"
+const binaryVersion = "1.21.0"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -26,10 +25,7 @@ var (
 	// verification for the current revision.
 	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
 	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
-	externalMutationRE   = regexp.MustCompile(`(?i)(curl\b[^\n]*(--request|-X)\s*(POST|PUT|PATCH|DELETE)\b|gh\s+api\b[^\n]*(--method|-X)\s*(POST|PUT|PATCH|DELETE)\b|\b(bw|op|vault)\b[^\n]*\b(create|delete|edit|update|move)\b|docker\s+(service\s+update|stack\s+deploy)|kubectl\s+(apply|delete)|terraform\s+apply)`)
 	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
-	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
-	correctionScopeRE    = regexp.MustCompile(`(?i)\b(repo|repository|target|branch|worktree|workspace|directory|folder|environment|production|staging|deploy|deployment|file|edit|codebase|correction)\b`)
 	gitCommitRE          = regexp.MustCompile(`(?i)^\s*git\s+commit\b`)
 	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
 	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
@@ -73,7 +69,6 @@ type pendingCall struct {
 	Shipping           bool      `json:"shipping,omitempty"`
 	Deploying          bool      `json:"deploying,omitempty"`
 	DeployCommitMatch  bool      `json:"deploy_commit_match,omitempty"`
-	ResultMarker       string    `json:"result_marker,omitempty"`
 	TestEligible       bool      `json:"test_eligible,omitempty"`
 	WorktreeKnown      bool      `json:"worktree_known,omitempty"`
 	WorktreeSnapshot   string    `json:"worktree_snapshot,omitempty"`
@@ -113,9 +108,22 @@ type state struct {
 	PassiveWaitStreak            int                    `json:"passive_wait_streak"`
 	TodosParked                  int                    `json:"todos_parked"`
 	TodosCompleted               int                    `json:"todos_completed"`
+	TodoAddAttempts              int                    `json:"todo_add_attempts"`
+	TodoAddFailures              int                    `json:"todo_add_failures"`
+	TodoAddUnknown               int                    `json:"todo_add_unknown"`
+	RepeatedTodoAdds             int                    `json:"repeated_todo_adds"`
+	PlanItems                    int                    `json:"plan_items"`
+	PlanCompleted                int                    `json:"plan_completed"`
+	PlanAddAttempts              int                    `json:"plan_add_attempts"`
+	PlanDuplicateAdds            int                    `json:"plan_duplicate_adds"`
+	AgentCalls                   int                    `json:"agent_calls"`
+	DistinctAgentTasks           int                    `json:"distinct_agent_tasks"`
+	RepeatedAgentCalls           int                    `json:"repeated_agent_calls"`
 	ToolCounts                   map[string]int         `json:"tool_counts"`
 	Fingerprints                 map[string]int         `json:"fingerprints"`
 	TestFingerprints             map[string]int         `json:"test_fingerprints"`
+	TodoFingerprints             map[string]int         `json:"todo_fingerprints"`
+	AgentFingerprints            map[string]int         `json:"agent_fingerprints"`
 	Pending                      map[string]pendingCall `json:"pending"`
 	LastTestPassed               bool                   `json:"last_test_passed"`
 	LastTestResultKnown          bool                   `json:"last_test_result_known"`
@@ -142,12 +150,6 @@ type state struct {
 	GoalScoped                   bool                   `json:"goal_scoped"`
 }
 
-type sessionSteer struct {
-	CorrectionStreak int  `json:"correction_streak"`
-	SparkCalls       int  `json:"spark_calls"`
-	SparkReviewShown bool `json:"spark_review_shown"`
-}
-
 type backgroundJob struct {
 	ID          string    `json:"id"`
 	Cleanup     string    `json:"cleanup"`
@@ -159,12 +161,14 @@ type backgroundJob struct {
 }
 
 type todoItem struct {
-	ID        string    `json:"id"`
-	Text      string    `json:"text"`
-	Context   string    `json:"context"`
-	Source    string    `json:"source"`
-	CreatedAt time.Time `json:"created_at"`
-	DoneAt    time.Time `json:"done_at,omitempty"`
+	ID            string    `json:"id"`
+	Text          string    `json:"text"`
+	Context       string    `json:"context"`
+	Source        string    `json:"source"`
+	AddAttempts   int       `json:"add_attempts,omitempty"`
+	DuplicateAdds int       `json:"duplicate_adds,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	DoneAt        time.Time `json:"done_at,omitempty"`
 }
 
 type lifetime struct {
@@ -191,18 +195,8 @@ type codexGoal struct {
 	UpdatedAtMS int64  `json:"updated_at_ms"`
 }
 
-type hookSpecificOutput struct {
-	HookEventName      string         `json:"hookEventName"`
-	AdditionalContext  string         `json:"additionalContext,omitempty"`
-	PermissionDecision string         `json:"permissionDecision,omitempty"`
-	UpdatedInput       map[string]any `json:"updatedInput,omitempty"`
-}
-
 type hookOutput struct {
-	Decision           string              `json:"decision,omitempty"`
-	Reason             string              `json:"reason,omitempty"`
-	SystemMessage      string              `json:"systemMessage,omitempty"`
-	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	SystemMessage string `json:"systemMessage,omitempty"`
 }
 
 func main() {
@@ -270,12 +264,12 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "                                  mark complete; --wake notifies the recorded tmux pane")
 	fmt.Fprintln(w, "  one-shot-tally background list  list recorded background jobs and cleanup commands")
 	fmt.Fprintln(w, "  one-shot-tally todo add TEXT --context WHY")
-	fmt.Fprintln(w, "                                  record deferred work with its context")
-	fmt.Fprintln(w, "  one-shot-tally todo list [--all] list open deferred work, or include completed items")
-	fmt.Fprintln(w, "  one-shot-tally todo done ID      complete one deferred item")
+	fmt.Fprintln(w, "                                  add a work item with its context")
+	fmt.Fprintln(w, "  one-shot-tally todo list [--all] list open work items, or include completed items")
+	fmt.Fprintln(w, "  one-shot-tally todo done ID      complete one work item")
 	fmt.Fprintln(w, "  one-shot-tally goal list [--all] list resumable goals, or all goals")
 	fmt.Fprintln(w, "  one-shot-tally goal show ID      print a previous goal")
-	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the exact create_goal handoff")
+	fmt.Fprintln(w, "  one-shot-tally goal resume ID    print the saved goal instructions")
 	fmt.Fprintln(w, "  one-shot-tally credential key-check")
 	fmt.Fprintln(w, "                                  verify the pinned GnuPG WKD recipient key")
 	fmt.Fprintln(w, "  one-shot-tally credential send --operation-id UUID --account REF")
@@ -283,7 +277,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Hooks record work and provide short coaching.")
+	fmt.Fprintln(w, "Hooks record facts and do not change commands.")
 	fmt.Fprintln(w, "Run status when you want a readable report.")
 }
 
@@ -297,15 +291,11 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the current request. Verify changes before you finish. Use ship-it for every Git repository change."
-		goalActive, err := reconcileSessionGoal(e.SessionID)
+		_, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
 		}
-		if goalActive {
-			context += " Keep the active goal in scope."
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: context}})
+		return writeJSON(w, hookOutput{})
 	case "UserPromptSubmit":
 		return userPromptSubmit(e, w)
 	case "PreToolUse":
@@ -320,57 +310,7 @@ func runHook(r io.Reader, w io.Writer) error {
 }
 
 func userPromptSubmit(e event, w io.Writer) error {
-	p, err := sessionSteerPath(e.SessionID)
-	if err != nil {
-		return err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil {
-		return err
-	}
-	if !correctionPrompt(e.Prompt) {
-		return writeJSON(w, hookOutput{})
-	}
-	steer.CorrectionStreak++
-	if err := saveSessionSteer(p, steer); err != nil {
-		return err
-	}
-	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-		HookEventName:     "UserPromptSubmit",
-		AdditionalContext: correctionGuidance(steer.CorrectionStreak),
-	}})
-}
-
-func correctionGuidance(streak int) string {
-	switch {
-	case streak <= 1:
-		return "Apply the correction. Keep any work that still fits."
-	case streak == 2:
-		return "Another correction came in. Recheck the repository and next step."
-	default:
-		return "Corrections are repeating. Pause and restate the target and next step."
-	}
-}
-
-func correctionPrompt(prompt string) bool {
-	prompt = strings.ToLower(strings.TrimSpace(prompt))
-	if strings.HasPrefix(prompt, "no, stop ") || strings.HasPrefix(prompt, "actually, switch from ") || strings.HasPrefix(prompt, "actually switch from ") {
-		return true
-	}
-	if !correctionScopeRE.MatchString(prompt) {
-		return false
-	}
-	for _, scope := range []string{"repo", "repository", "target", "branch", "worktree", "workspace", "directory", "folder", "environment", "production", "staging", "deploy", "deployment", "file", "edit", "codebase", "correction"} {
-		if strings.HasPrefix(prompt, "wrong "+scope) {
-			return true
-		}
-	}
-	return strings.HasPrefix(prompt, "stop ") || strings.HasPrefix(prompt, "stop,") || strings.HasPrefix(prompt, "stop:") || strings.HasPrefix(prompt, "please stop ") || strings.Contains(prompt, "switch from ") || strings.Contains(prompt, "belongs in ") || strings.Contains(prompt, "meant to") && strings.Contains(prompt, "instead") || strings.HasPrefix(prompt, "use ") && (strings.Contains(prompt, " instead") || strings.Contains(prompt, ", not "))
+	return writeJSON(w, hookOutput{})
 }
 
 func deliveryInvocations(command string) (shipping, deploying bool) {
@@ -476,12 +416,15 @@ func preToolUse(e event, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := reconcilePlan(&s, e.CWD); err != nil {
+		return err
+	}
 	goalActive, err := sessionGoalActive(e.SessionID)
 	if err != nil {
 		return err
 	}
 	goalChange := goalTransition(e)
-	if goalActive || goalChange != "" {
+	if goalActive {
 		s.GoalScoped = true
 	}
 	command := commandFrom(e.ToolInput)
@@ -491,12 +434,12 @@ func preToolUse(e event, w io.Writer) error {
 	isShipping, isDeploying := deliveryInvocations(command)
 	isProduction := isCommand && productionInvocation(command, isShipping, isDeploying)
 	isRead := readRE.MatchString(command)
-	isExternalMutation := isCommand && !isRead && externalMutationRE.MatchString(command)
 	isPassiveWait := passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
-	isTodoAdd := isCommand && todoAddRE.MatchString(command)
-	isTodoDone := isCommand && todoDoneRE.MatchString(command)
+	isTodoAdd := isCommand && standaloneTrackedCommand(command, todoAddRE)
+	isTodoDone := isCommand && standaloneTrackedCommand(command, todoDoneRE)
+	isAgentCall := isAgentSpawn(e.ToolName)
 
 	s.TotalCalls++
 	callUnits := 4
@@ -510,6 +453,23 @@ func preToolUse(e event, w io.Writer) error {
 	fp := fingerprint(e.ToolName, e.ToolInput)
 	s.Fingerprints[fp]++
 	repeats := s.Fingerprints[fp]
+	if isTodoAdd {
+		s.TodoAddAttempts++
+		s.TodoFingerprints[fp]++
+		if s.TodoFingerprints[fp] > 1 {
+			s.RepeatedTodoAdds++
+		}
+	}
+	if isAgentCall {
+		s.AgentCalls++
+		agentKey := agentTaskKey(e)
+		s.AgentFingerprints[agentKey]++
+		if s.AgentFingerprints[agentKey] == 1 {
+			s.DistinctAgentTasks++
+		} else {
+			s.RepeatedAgentCalls++
+		}
+	}
 	if isEdit {
 		s.Revision++
 		s.InspectionStreak = 0
@@ -552,104 +512,21 @@ func preToolUse(e event, w io.Writer) error {
 		s.LastProductionResultKnown = false
 		s.LastProductionSucceeded = false
 	}
-	resultMarker := ""
-	var updatedInput map[string]any
-	if e.ToolUseID != "" && canonicalBashTool(e.ToolName) && (isTest || isProduction) {
-		resultMarker = commandResultMarker(e)
-		updatedInput = markedCommandInput(e.ToolInput, command, resultMarker)
-		if updatedInput == nil {
-			resultMarker = ""
-		}
-	}
 	worktreeSnapshot, worktreeKnown := "", false
 	observeCommandWorktree := isCommand && !isRead && !isPassiveWait && !isBackgroundRecord && !isBackgroundComplete && !isTodoAdd && !isTodoDone && !isShipping && !isDeploying && !gitCommitRE.MatchString(command)
 	if s.Revision > 0 && (isEdit || observeCommandWorktree) {
 		worktreeSnapshot, worktreeKnown = gitWorktreeSnapshot(e.CWD)
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, ResultMarker: resultMarker, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
-	}
-	var messages []string
-	if goalChange == "start" {
-		messages = append(messages, "Goal mode started. Keep work tied to the objective. Delegate only distinct, independent work.")
-	}
-	if repeats == 2 && isAgentSpawn(e.ToolName) {
-		messages = append(messages, "An identical worker is already running. Reuse it or give the next worker a different task.")
-	}
-	if isEdit && s.LastTestResultKnown && !s.LastTestPassed {
-		messages = append(messages, "Use the failed check to guide this edit. Rerun the affected check afterward.")
-	}
-	if isProduction || isExternalMutation {
-		messages = append(messages, "Before this external change, confirm the repository, destination, revision, and expected result.")
-	}
-	if isPassiveWait {
-		if message := pacedSteer(s.PassiveWaitStreak,
-			"Long work can run in the background and send one completion notice.",
-			"Polling is repeating. Record the job and continue another useful task.",
-			"Polling is still repeating. Wait for the recorded completion notice."); message != "" {
-			messages = append(messages, message)
-		}
-	}
-	if isCommand && detachedTmuxRE.MatchString(command) && !isBackgroundRecord {
-		messages = append(messages, "Record this background job with its cleanup command and completion target.")
-	}
-	if repeats > 1 {
-		if message := pacedSteer(repeats-1,
-			fmt.Sprintf("%s received the same input again. Reuse the earlier result if it is current.", e.ToolName),
-			fmt.Sprintf("%s has repeated this input four times. Use the result or %s.", e.ToolName, nextAction(s)),
-			fmt.Sprintf("%s keeps repeating this input. Continue only if the state changed; otherwise, %s.", e.ToolName, nextAction(s))); message != "" {
-			messages = append(messages, message)
-		}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
 	}
 	if repeats == 4 {
 		s.RepeatedWarnings++
 	}
-	if isTest && s.Tests == 6 {
-		messages = append(messages, "This is the sixth test run. Reuse passing results that still apply.")
-	}
 	if err := save(p, s); err != nil {
 		return err
 	}
-	if sparkCall {
-		if err := recordSessionSparkCall(e.SessionID); err != nil {
-			return err
-		}
-	}
-	if len(messages) == 0 && updatedInput == nil {
-		return writeJSON(w, hookOutput{})
-	}
-	specific := &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}
-	if updatedInput != nil {
-		specific.PermissionDecision = "allow"
-		specific.UpdatedInput = updatedInput
-	}
-	return writeJSON(w, hookOutput{HookSpecificOutput: specific})
-}
-
-func pacedSteer(occurrence int, first, fourth, later string) string {
-	switch {
-	case occurrence == 1:
-		return first
-	case occurrence == 3:
-		return fourth
-	case occurrence >= 6 && (occurrence-6)%6 == 0:
-		return later
-	default:
-		return ""
-	}
-}
-
-func nextAction(s state) string {
-	switch {
-	case s.LastTestResultKnown && !s.LastTestPassed:
-		return "fix one cause, then rerun the affected and final checks"
-	case s.Revision == 0:
-		return "take the next step supported by the current evidence"
-	case s.VerifiedRevision == s.Revision && s.LastTestPassed:
-		return "run ship-it to finish the repository cycle"
-	default:
-		return "finish the current change and run the relevant checks"
-	}
+	return writeJSON(w, hookOutput{})
 }
 
 func postToolUse(e event, w io.Writer) error {
@@ -671,7 +548,7 @@ func postToolUse(e event, w io.Writer) error {
 	resultKnown, resultSucceeded := false, false
 	if ok {
 		delete(s.Pending, e.ToolUseID)
-		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse, pending.ResultMarker)
+		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse)
 		commandPassed := resultKnown && resultSucceeded
 		if resultKnown && pending.Sequence >= s.LastCallResultSequence {
 			s.LastCallResultKnown = true
@@ -778,10 +655,25 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.TodoAdd && commandPassed {
 			s.TodosParked++
 		}
+		if pending.TodoAdd && !commandPassed {
+			if resultKnown {
+				s.TodoAddFailures++
+			} else {
+				s.TodoAddUnknown++
+			}
+		}
 		if pending.TodoDone && commandPassed {
 			s.TodosCompleted++
 		}
+		if (pending.TodoAdd || pending.TodoDone) && pending.WorkingDirectory != "" {
+			if err := reconcilePlan(&s, pending.WorkingDirectory); err != nil {
+				return err
+			}
+		}
 		if pending.GoalTransition != "" && goalTransitionPassed(e.ToolResponse, pending.GoalTransition) {
+			if pending.GoalTransition == "start" {
+				s.GoalScoped = true
+			}
 			if err := setSessionGoalActive(e.SessionID, pending.GoalTransition == "start"); err != nil {
 				return err
 			}
@@ -789,11 +681,6 @@ func postToolUse(e event, w io.Writer) error {
 	}
 	if err := save(p, s); err != nil {
 		return err
-	}
-	if ok && passed && (pending.Edit || pending.Test) {
-		if err := resetSessionSteer(e.SessionID); err != nil {
-			return err
-		}
 	}
 	return writeJSON(w, hookOutput{})
 }
@@ -813,6 +700,9 @@ func stop(e event, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := reconcilePlan(&s, e.CWD); err != nil {
+		return err
+	}
 	goalActive, err := sessionGoalActive(e.SessionID)
 	if err != nil {
 		return err
@@ -821,19 +711,11 @@ func stop(e event, w io.Writer) error {
 	if goalActive {
 		line += "\nGoal state: ACTIVE"
 	}
-	stewardship := ""
-	if s.BackgroundRecords > s.BackgroundCompletions {
-		stewardship = " Background work remains. Wait for its completion notice."
-	}
 	closure := closingLoop(s, deployContract)
-	if !e.StopHookActive && !goalActive {
-		sparkReview, err := claimSparkRoutingReview(e.SessionID, s)
-		if err != nil {
-			return err
-		}
-		closure += sparkReview
+	message := line
+	if closure != "" {
+		message += "\n" + strings.TrimSpace(closure)
 	}
-	message := line + "\n" + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure
 	if !requiredDeliveryPending(s) && !goalActive && finalPassed(s) && !s.RecordedInLifetime {
 		if err := recordLifetime(s); err != nil {
 			return err
@@ -843,48 +725,51 @@ func stop(e event, w io.Writer) error {
 			return err
 		}
 	}
+	if e.StopHookActive {
+		return writeJSON(w, hookOutput{})
+	}
 	return writeJSON(w, hookOutput{SystemMessage: message})
 }
 
 func closingLoop(s state, deployContract bool) string {
 	kind, attempted, known, succeeded, _ := latestDeliveryResult(s)
 	if attempted && known && !succeeded && kind == "deploy" {
-		return " Delivery: deploy-it failed. Fix the recorded cause before retrying."
+		return "Delivery: deploy-it failed."
 	}
 	if attempted && known && !succeeded && kind == "ship" {
-		return " Delivery: ship-it failed. Git may already be pushed; check its state before retrying."
+		return "Delivery: ship-it failed; Git status is unknown."
 	}
 	if attempted && !known && kind == "deploy" {
-		return " Delivery: deploy-it returned no result. Check deployment state before retrying."
+		return "Delivery: deploy-it result unknown."
 	}
 	if attempted && !known && kind == "ship" {
-		return " Delivery: ship-it returned no result. Check Git and deployment state before retrying."
+		return "Delivery: ship-it result unknown; Git status is unknown."
 	}
 	if attempted && known && !succeeded {
-		return " Delivery failed. Fix the recorded cause before retrying."
+		return "Delivery: failed."
 	}
 	if attempted && !known {
-		return " Delivery returned no result. Check external state before retrying."
+		return "Delivery: result unknown."
 	}
 	if s.Revision == 0 {
 		return ""
 	}
 	if !currentEditReady(s) {
-		return " Confirm that the latest edit completed."
+		return "Edit result: unknown."
 	}
 	if !finalPassed(s) {
-		return " Run the relevant check."
+		return "Checks: current changes are not verified."
 	}
 	if recoveredCurrentDeployment(s) {
-		return " Shipping and deployment are recorded. Confirm the visible result."
+		return "Delivery: shipping and deployment recorded."
 	}
 	if shippedCurrentRevision(s) {
 		if deployContract {
-			return " Shipping is recorded. Confirm deployment and the visible result."
+			return "Delivery: shipping recorded; deployment result unknown."
 		}
-		return " Shipping is recorded. No deployment setup is configured."
+		return "Delivery: shipping recorded; no deployment contract."
 	}
-	return " Run ship-it to finish this repository cycle."
+	return "Delivery: not recorded for the verified revision."
 }
 
 func outcomeAdvisory(outcome string) string {
@@ -905,18 +790,27 @@ func isAgentSpawn(tool string) bool {
 	return strings.Contains(tool, "spawn_agent") || strings.Contains(tool, "task") && strings.Contains(tool, "agent")
 }
 
+func agentTaskKey(e event) string {
+	var fields map[string]any
+	if json.Unmarshal(e.ToolInput, &fields) == nil {
+		if taskName, ok := fields["task_name"].(string); ok && strings.TrimSpace(taskName) != "" {
+			return "task:" + strings.ToLower(strings.TrimSpace(taskName))
+		}
+	}
+	return "input:" + fingerprint(e.ToolName, e.ToolInput)
+}
+
 func reportLine(s state) string {
 	mode := "standard"
-	meaning := "diagnostic"
 	if s.GoalScoped {
-		mode = "/goal; tool-call volume is not scored"
-		meaning = "diagnostic; tool-call volume not scored"
+		mode = "goal"
 	}
-	score := fmt.Sprintf("%d/100 (%s)", numericScore(s), meaning)
+	callAllowance, checkAllowance := workloadAllowance(s)
+	score := fmt.Sprintf("%d/100 (diagnostic; workload-adjusted)", numericScore(s))
 	if !hasRecordedActivity(s) {
 		score = "N/A (no observed work)"
 	}
-	return fmt.Sprintf("Recorded outcome: %s\nMode: %s\nTool calls: %d total; %d Spark; %s weighted\nChecks: %d total; %d passed; %d failed; %d unknown; %s elapsed; %s repeated\nDelivery: %d completed; %d shipped; %d deployed\nBackground: %d recorded; %d completed; %d passive waits\nTODOs: %d saved; %d completed\nActivity score: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, score)
+	return fmt.Sprintf("Recorded outcome: %s\nMode: %s\nTool calls: %d total; %d Spark; %s weighted; %d allowed\nChecks: %d total; %d passed; %d failed; %d unknown; %d allowed; %s elapsed; %s repeated\nWork items: %d planned; %d completed; %d open; %d add attempts; %d repeated adds; %d failed adds; %d unknown adds\nDelegation: %d calls; %d distinct tasks; %d Spark; %d repeated calls\nDelivery: %d completed; %d shipped; %d deployed\nBackground: %d recorded; %d completed; %d passive waits\nActivity score: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), callAllowance, s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), checkAllowance, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), planItems(s), planCompleted(s), openTodos(s), planAddAttempts(s), planRepeatedAdds(s), s.TodoAddFailures, s.TodoAddUnknown, s.AgentCalls, s.DistinctAgentTasks, s.SparkCalls, s.RepeatedAgentCalls, s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, score)
 }
 
 func numericScore(s state) int {
@@ -928,12 +822,14 @@ func numericScore(s state) int {
 	}
 	score := 100
 	tests := completedTests(s)
+	_, checkAllowance := workloadAllowance(s)
+	testExcess := tests - checkAllowance
 	switch {
-	case tests > 5:
-		score -= 35 + (tests-6)*5
-	case tests == 5:
+	case testExcess > 2:
+		score -= 35 + (testExcess-3)*5
+	case testExcess == 2:
 		score -= 20
-	case tests == 4:
+	case testExcess == 1:
 		score -= 10
 	case tests == 1 && s.Revision > 0:
 		score -= 8
@@ -941,19 +837,23 @@ func numericScore(s state) int {
 	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
 	if finalPassed(s) {
-		score += minInt(6, s.TodosParked*2)
+		score += minInt(8, minInt(planItems(s), planCompleted(s))*2)
+		if plannedWorkItems(s) >= 2 {
+			score += minInt(6, s.DistinctAgentTasks*2)
+		}
 		if s.ProductionCompletions > 0 {
 			score += 15
 		}
 	}
+	score -= minInt(12, s.TodoAddFailures*3+planRepeatedAdds(s))
+	score -= minInt(10, s.RepeatedAgentCalls*2)
 	if s.MaxInspectionStreak >= 8 {
 		score -= minInt(15, s.MaxInspectionStreak-5)
 	}
-	if !s.GoalScoped {
-		effectiveCalls := (s.CallCostUnits + 3) / 4
-		if effectiveCalls > 30 {
-			score -= minInt(15, (effectiveCalls-30)/3+1)
-		}
+	callAllowance, _ := workloadAllowance(s)
+	effectiveCalls := (s.CallCostUnits + 3) / 4
+	if excess := effectiveCalls - callAllowance; excess > 0 {
+		score -= minInt(15, (excess+2)/3)
 	}
 	if s.TotalTestMillis > 300_000 {
 		score -= minInt(15, int((s.TotalTestMillis-300_000+119_999)/120_000))
@@ -974,6 +874,41 @@ func numericScore(s state) int {
 		return 50
 	}
 	return score
+}
+
+func workloadAllowance(s state) (calls, checks int) {
+	items := minInt(12, plannedWorkItems(s))
+	completed := minInt(12, planCompleted(s))
+	agents := minInt(4, s.DistinctAgentTasks)
+	return 30 + items*5 + completed*2 + agents, 3 + minInt(7, items)
+}
+
+func plannedWorkItems(s state) int {
+	return maxInt(planItems(s), planCompleted(s))
+}
+
+func openTodos(s state) int {
+	open := planItems(s) - planCompleted(s)
+	if open < 0 {
+		return 0
+	}
+	return open
+}
+
+func planItems(s state) int {
+	return maxInt(s.PlanItems, s.TodosParked)
+}
+
+func planCompleted(s state) int {
+	return maxInt(s.PlanCompleted, s.TodosCompleted)
+}
+
+func planAddAttempts(s state) int {
+	return maxInt(s.PlanAddAttempts, s.TodoAddAttempts)
+}
+
+func planRepeatedAdds(s state) int {
+	return maxInt(s.PlanDuplicateAdds, s.RepeatedTodoAdds)
 }
 
 func completedTests(s state) int { return s.TestPasses + s.TestFailures }
@@ -1104,7 +1039,7 @@ func deployCommitMatchesHead(command, cwd string) bool {
 }
 
 func hasRecordedActivity(s state) bool {
-	return s.TotalCalls > 0 || s.Revision > 0 || s.Tests > 0 || s.ProductionAttempts > 0 || s.BackgroundRecords > 0 || s.BackgroundCompletions > 0 || s.TodosParked > 0 || s.TodosCompleted > 0
+	return s.TotalCalls > 0 || s.Revision > 0 || s.Tests > 0 || s.ProductionAttempts > 0 || s.BackgroundRecords > 0 || s.BackgroundCompletions > 0 || s.TodosParked > 0 || s.TodosCompleted > 0 || s.PlanItems > 0 || s.AgentCalls > 0
 }
 
 func currentEditReady(s state) bool {
@@ -1265,47 +1200,7 @@ func passiveWait(e event, command string) bool {
 	return passiveWaitRE.MatchString(command)
 }
 
-func commandResultMarker(e event) string {
-	sum := sha256.Sum256([]byte(e.SessionID + "\x00" + e.TurnID + "\x00" + e.ToolUseID))
-	return hex.EncodeToString(sum[:12])
-}
-
-func markedCommandInput(raw json.RawMessage, command, marker string) map[string]any {
-	if strings.TrimSpace(command) == "" || marker == "" {
-		return nil
-	}
-	var input map[string]any
-	if json.Unmarshal(raw, &input) != nil || input == nil {
-		return nil
-	}
-	if _, ok := input["command"].(string); !ok {
-		return nil
-	}
-	input["command"] = fmt.Sprintf("(\ntrap 'one_shot_tally_exit=$?; printf \"\\n__ONE_SHOT_TALLY_RESULT_%s__:%%d\\n\" \"$one_shot_tally_exit\"; exit \"$one_shot_tally_exit\"' 0\n%s\n)", marker, command)
-	return input
-}
-
-func canonicalBashTool(tool string) bool {
-	return strings.EqualFold(strings.TrimSpace(tool), "Bash")
-}
-
-func markedResponseResult(output, marker string) (bool, bool) {
-	if marker == "" {
-		return false, false
-	}
-	prefix := "__ONE_SHOT_TALLY_RESULT_" + marker + "__:"
-	index := strings.LastIndex(output, prefix)
-	if index < 0 {
-		return false, false
-	}
-	code, err := strconv.Atoi(strings.TrimSpace(output[index+len(prefix):]))
-	if err != nil {
-		return false, false
-	}
-	return true, code == 0
-}
-
-func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool) {
+func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 	if len(raw) == 0 {
 		return false, false
 	}
@@ -1313,34 +1208,9 @@ func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool)
 	if json.Unmarshal(raw, &value) != nil {
 		return false, false
 	}
-	marker := ""
-	if len(markers) > 0 {
-		marker = markers[0]
-	}
 	known, failed := false, false
 	var inspect func(map[string]any, bool)
 	var inspectValue func(any, bool)
-	var inspectMarkerValue func(any)
-	inspectMarkerValue = func(value any) {
-		switch item := value.(type) {
-		case string:
-			if marked, succeeded := markedResponseResult(strings.TrimSpace(item), marker); marked {
-				known = true
-				failed = failed || !succeeded
-			}
-		case []any:
-			for _, child := range item {
-				inspectMarkerValue(child)
-			}
-		case map[string]any:
-			for key, child := range item {
-				switch strings.ToLower(key) {
-				case "content", "output", "text":
-					inspectMarkerValue(child)
-				}
-			}
-		}
-	}
 	inspectValue = func(value any, root bool) {
 		switch item := value.(type) {
 		case []any:
@@ -1379,15 +1249,11 @@ func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool)
 				}
 			case "result", "response", "metadata", "tool_response", "structuredcontent", "structured_content":
 				inspectValue(child, false)
-			case "content", "output", "text":
-				inspectMarkerValue(child)
 			}
 		}
 	}
 	if envelope, ok := value.(map[string]any); ok {
 		inspect(envelope, true)
-	} else {
-		inspectMarkerValue(value)
 	}
 	return known, known && !failed
 }
@@ -1518,6 +1384,12 @@ func normalizeState(s *state) {
 	if s.TestFingerprints == nil {
 		s.TestFingerprints = map[string]int{}
 	}
+	if s.TodoFingerprints == nil {
+		s.TodoFingerprints = map[string]int{}
+	}
+	if s.AgentFingerprints == nil {
+		s.AgentFingerprints = map[string]int{}
+	}
 	if s.Pending == nil {
 		s.Pending = map[string]pendingCall{}
 	}
@@ -1536,13 +1408,16 @@ func normalizeState(s *state) {
 	if s.StateVersion < 4 {
 		s.StateVersion = 4
 	}
+	if s.StateVersion < 5 {
+		s.StateVersion = 5
+	}
 	if s.CallCostUnits == 0 && s.TotalCalls > 0 {
 		s.CallCostUnits = s.TotalCalls * 4
 	}
 }
 
 func emptyState(sessionID, turnID string) state {
-	return state{StateVersion: 4, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
+	return state{StateVersion: 5, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, TodoFingerprints: map[string]int{}, AgentFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
 }
 
 func decodeState(b []byte, s *state) (bool, error) {
@@ -1655,117 +1530,6 @@ func statePath(e event) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(e.SessionID + ":" + e.TurnID))
 	return filepath.Join(dir, hex.EncodeToString(sum[:12])+".json"), nil
-}
-
-func sessionSteerPath(sessionID string) (string, error) {
-	dir, err := stateDir()
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(sessionID))
-	return filepath.Join(dir, "steer-"+hex.EncodeToString(sum[:12])+".state"), nil
-}
-
-func loadSessionSteer(path string) (sessionSteer, error) {
-	var steer sessionSteer
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return steer, nil
-	}
-	if err != nil {
-		return steer, err
-	}
-	if err := json.Unmarshal(b, &steer); err != nil {
-		if quarantineErr := quarantineState(path); quarantineErr != nil {
-			return sessionSteer{}, quarantineErr
-		}
-		return sessionSteer{}, nil
-	}
-	return steer, nil
-}
-
-func saveSessionSteer(path string, steer sessionSteer) error {
-	b, err := json.Marshal(steer)
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".steer-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
-}
-
-func resetSessionSteer(sessionID string) error {
-	p, err := sessionSteerPath(sessionID)
-	if err != nil {
-		return err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil || steer.CorrectionStreak == 0 {
-		return err
-	}
-	steer.CorrectionStreak = 0
-	return saveSessionSteer(p, steer)
-}
-
-func recordSessionSparkCall(sessionID string) error {
-	p, err := sessionSteerPath(sessionID)
-	if err != nil {
-		return err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil {
-		return err
-	}
-	steer.SparkCalls++
-	return saveSessionSteer(p, steer)
-}
-
-func claimSparkRoutingReview(sessionID string, s state) (string, error) {
-	if !finalPassed(s) || s.SuccessfulEdits < 2 {
-		return "", nil
-	}
-	p, err := sessionSteerPath(sessionID)
-	if err != nil {
-		return "", err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil {
-		return "", err
-	}
-	if steer.SparkCalls > 0 || steer.SparkReviewShown {
-		return "", nil
-	}
-	steer.SparkReviewShown = true
-	if err := saveSessionSteer(p, steer); err != nil {
-		return "", err
-	}
-	return " No Spark worker was used. For the next large change, check whether one independent, low-risk edit can run in parallel.", nil
 }
 
 func goalMarkerPath(sessionID string) (string, error) {
@@ -1988,8 +1752,8 @@ func codexGoalsPath() (string, error) {
 }
 
 func isSparkCall(e event) bool {
-	if strings.Contains(strings.ToLower(e.ToolName), "spark") {
-		return true
+	if !isAgentSpawn(e.ToolName) {
+		return false
 	}
 	var fields map[string]any
 	if json.Unmarshal(e.ToolInput, &fields) != nil {
@@ -2001,6 +1765,10 @@ func isSparkCall(e event) bool {
 		}
 	}
 	return false
+}
+
+func standaloneTrackedCommand(command string, pattern *regexp.Regexp) bool {
+	return !strings.ContainsAny(command, ";&|\n") && pattern.MatchString(command)
 }
 
 func formatCallUnits(units int) string {
@@ -2206,22 +1974,37 @@ func todoCommand(args []string, w io.Writer) error {
 func addTodo(text, context string, w io.Writer) error {
 	text, context = singleLine(text), singleLine(context)
 	if text == "" || context == "" {
-		return errors.New("TODO text and deferral context are required")
+		return errors.New("TODO text and work context are required")
 	}
-	source, err := os.Getwd()
+	source, err := projectSource("")
 	if err != nil {
 		return err
 	}
+	p, err := todosPath()
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
 	idSum := sha256.Sum256([]byte(strings.ToLower(source + "\n" + text)))
 	id := hex.EncodeToString(idSum[:5])
 	items, err := loadTodos()
 	if err != nil {
 		return err
 	}
-	if _, exists := items[id]; exists {
+	if item, exists := items[id]; exists {
+		item.AddAttempts = maxInt(1, item.AddAttempts) + 1
+		item.DuplicateAdds++
+		items[id] = item
+		if err := saveTodos(items); err != nil {
+			return err
+		}
 		return fmt.Errorf("TODO %s already exists", id)
 	}
-	items[id] = todoItem{ID: id, Text: text, Context: context, Source: source, CreatedAt: time.Now().UTC()}
+	items[id] = todoItem{ID: id, Text: text, Context: context, Source: source, AddAttempts: 1, CreatedAt: time.Now().UTC()}
 	if err := saveTodos(items); err != nil {
 		return err
 	}
@@ -2253,12 +2036,21 @@ func listTodos(includeDone bool, w io.Writer) error {
 		if !item.DoneAt.IsZero() {
 			status = "done"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\tcontext: %s\tsource: %s\n", item.ID, status, item.Text, item.Context, item.Source)
+		fmt.Fprintf(w, "%s\t%s\t%s\tcontext: %s\tsource: %s\tadd attempts: %d\tduplicate adds: %d\n", item.ID, status, item.Text, item.Context, item.Source, maxInt(1, item.AddAttempts), item.DuplicateAdds)
 	}
 	return nil
 }
 
 func completeTodo(id string, w io.Writer) error {
+	p, err := todosPath()
+	if err != nil {
+		return err
+	}
+	unlock, err := acquireStateLock(p)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
 	items, err := loadTodos()
 	if err != nil {
 		return err
@@ -2304,11 +2096,24 @@ func saveTodos(items map[string]todoItem) error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".todos.*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, p)
 }
 
 func todosPath() (string, error) {
@@ -2317,6 +2122,59 @@ func todosPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(filepath.Dir(p), "todos.json"), nil
+}
+
+func reconcilePlan(s *state, cwd string) error {
+	if strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	source, err := projectSource(cwd)
+	if err != nil {
+		return nil
+	}
+	items, err := loadTodos()
+	if err != nil {
+		return err
+	}
+	planned, completed, attempts, duplicates := 0, 0, 0, 0
+	for _, item := range items {
+		itemSource, sourceErr := projectSource(item.Source)
+		if sourceErr != nil || itemSource != source {
+			continue
+		}
+		planned++
+		attempts += maxInt(1, item.AddAttempts)
+		duplicates += item.DuplicateAdds
+		if !item.DoneAt.IsZero() {
+			completed++
+		}
+	}
+	s.PlanItems = planned
+	s.PlanCompleted = completed
+	s.PlanAddAttempts = attempts
+	s.PlanDuplicateAdds = duplicates
+	return nil
+}
+
+func projectSource(cwd string) (string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return "", err
+		}
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", err
+	}
+	if root, gitErr := exec.Command("git", "-C", abs, "rev-parse", "--show-toplevel").Output(); gitErr == nil {
+		abs = strings.TrimSpace(string(root))
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = resolved
+	}
+	return filepath.Clean(abs), nil
 }
 
 func valueOr(value, fallback string) string {
@@ -2382,11 +2240,12 @@ func printLatestTo(w io.Writer, asJSON bool) error {
 	s := selectStatusState(states)
 	life, _ := loadLifetime()
 	if asJSON {
-		var coachingScore any
+		var activityScore any
 		if hasRecordedActivity(s) {
-			coachingScore = numericScore(s)
+			activityScore = numericScore(s)
 		}
-		return writeJSON(w, map[string]any{"state": s, "outcome": recordedOutcome(s), "verified": finalPassed(s), "coaching_score": coachingScore, "report": reportLine(s), "lifetime": life})
+		callAllowance, checkAllowance := workloadAllowance(s)
+		return writeJSON(w, map[string]any{"state": s, "outcome": recordedOutcome(s), "verified": finalPassed(s), "activity_score": activityScore, "call_allowance": callAllowance, "check_allowance": checkAllowance, "report": reportLine(s), "lifetime": life})
 	}
 	fmt.Fprintln(w, reportLine(s))
 	if life.Runs > 0 {
@@ -2514,6 +2373,13 @@ func lifetimePath() (string, error) {
 
 func minInt(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

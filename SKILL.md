@@ -1,6 +1,6 @@
 ---
 name: one-shot-tally
-description: Use one-shot-tally for concise work coaching, status, goal recovery, background jobs, and durable TODOs.
+description: Use one-shot-tally for work status, workload-aware scoring, goal recovery, background jobs, and durable work items.
 ---
 
 # One-Shot Tally
@@ -28,18 +28,27 @@ one-shot-tally help|-h|--help
 
 ## Behavior
 
-The hook coaches the work cycle and records activity, checks, delivery, background work, and TODOs. It never blocks an action.
+The hook records activity, checks, delivery, background work, work items, and subagent calls. It never blocks an action.
 
 - `NO OBSERVED WORK`: no tool activity.
 - `ACTIVITY OBSERVED`: activity without verified current edits.
 - `FAILED`: an explicit unresolved failure.
 - `VERIFIED`: the current edit completed and a later standalone local check passed.
 
-`SessionStart` reminds the agent to finish, verify, and use `ship-it` for repository changes. `UserPromptSubmit` notices corrections.
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` return `{}`. The hook does not change or approve commands.
 
-`PreToolUse` gives short, paced prompts for repeated calls, failed checks, passive waits, detached jobs, external changes, and delivery. For canonical Bash tests and delivery commands, it adds a private result marker without changing command meaning or exit status.
+The first `Stop` reports the recorded facts. A repeated `Stop` returns `{}`.
 
-`PostToolUse` accepts explicit structured results or the matching private marker. Ordinary output text is not proof. At `Stop`, report the detailed tally and one clear next step.
+The score uses a workload allowance. Each accepted work item expands the allowance once. Completed items include closure overhead. Distinct subagent tasks include coordination overhead. Repeated or failed additions do not expand the allowance.
+
+For multi-step work:
+
+1. Add one TODO for each distinct result.
+2. Complete each TODO when its result is verified.
+3. Delegate only independent items that benefit from parallel work.
+4. Give each subagent task a distinct `task_name`.
+
+Do not create TODOs or subagents only to increase the score.
 
 ## Language
 
@@ -50,7 +59,7 @@ Use `$microsoft-writing-style` and `$sop-ste100-rewriter` for prose changes in t
 - Use one instruction per sentence or list item.
 - Put a condition before its action.
 - Keep exact command names, identifiers, and security terms.
-- Keep coaching short and practical.
+- Keep hook output factual.
 - Avoid legal and policy wording unless an exact field or command requires it.
 
 Use `background complete ID --wake` only from the detached job. Manual completion omits `--wake`.

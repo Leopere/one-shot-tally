@@ -1,8 +1,8 @@
 # one-shot-tally
 
-`one-shot-tally` coaches Codex through a work cycle and records what happened. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
+`one-shot-tally` records a Codex work cycle. It tracks tool use, checks, delivery, background jobs, work items, and subagent calls.
 
-The coach spots repeated calls, passive waits, redundant tests, unfinished background work, and missing checks. Its prompts are short and practical. It never blocks an action.
+Use the report to find repeated calls, passive waits, redundant checks, unfinished work, and missing verification. The hook does not change commands or approve actions.
 
 Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved. See [LICENSE](LICENSE).
 
@@ -13,22 +13,22 @@ Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved.
 - `FAILED`: a recorded action or check has an explicit unresolved failure.
 - `VERIFIED`: the current edit completed and a later standalone local check passed without changing the Git-visible worktree.
 
-The activity score is diagnostic. It does not change the recorded outcome.
+The activity score is diagnostic. It does not change the recorded outcome. The score uses a workload allowance instead of one fixed tool-call limit.
+
+The base allowance is 30 weighted calls and three checks. Each accepted work item adds five calls and one check. Each completed item adds two calls. A distinct subagent task adds one call for coordination. The report uses at most 12 work items, seven added checks, and four subagent tasks. Repeated and failed additions reduce the score but do not expand the allowance.
 
 ## Hook behavior
 
-- `SessionStart` reminds the agent to finish, verify, and use `ship-it` for repository changes.
-- `UserPromptSubmit` notices corrections and gives a brief realignment prompt.
-- `PreToolUse` gives paced coaching for repeated calls, failed checks, passive waits, detached jobs, external changes, and delivery.
-- For canonical Bash tests and delivery commands, `PreToolUse` adds a private result marker. The wrapper preserves the command and its exit status.
-- `PostToolUse` records explicit structured results or the matching private marker. Ordinary output text is not proof of success.
-- `Stop` reports the detailed tally and one clear next step. It never returns `decision:block`.
+- `SessionStart` and `UserPromptSubmit` return `{}`.
+- `PreToolUse` records calls and returns `{}`. It does not rewrite or approve a command.
+- `PostToolUse` records explicit structured results and returns `{}`. Plain output text is not proof of success.
+- The first `Stop` reports the detailed tally. A repeated `Stop` returns `{}`.
 
-Goal mode does not score tool-call volume. The coach can tell the agent to run `ship-it`, but it does not start a delivery command itself.
+Standard mode and goal mode use the same workload allowance.
 
 ## Language rules
 
-Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English for documentation, command output, and hook coaching.
+Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English for documentation and command output.
 
 - Lead with the result.
 - Use short, direct sentences.
@@ -36,7 +36,7 @@ Use Microsoft Writing Style and ASD-STE100-inspired Simplified Technical English
 - Put a condition before its action.
 - Use the same term for the same item.
 - Keep exact command names, identifiers, and security terms.
-- Keep coaching short and practical.
+- Keep hook output factual.
 - Avoid legal and policy wording unless an exact field or command requires it.
 
 ## Commands
@@ -76,14 +76,18 @@ one-shot-tally background complete docs-build --wake
 
 `record` captures `$TMUX_PANE` when available. `complete` is idempotent. Use `--wake` only from the detached job. Cleanup commands stay in state. The hook does not type cleanup commands into a terminal.
 
-## Deferred TODOs
+## Work items
+
+For multi-step work, add one item for each distinct result. Do not add a work item for a trivial one-step request.
 
 ```sh
 one-shot-tally todo add 'Review cache invalidation path' \
-  --context 'Outside the current task'
+  --context 'Required before the cache release'
 ```
 
-Use `todo list` to review entries and `todo done ID` to close one.
+Use `todo list` to review entries. Use `todo done ID` when the result is complete. The report shows accepted items, add attempts, repeated adds, completed items, and open items.
+
+Delegate an item only when it is independent and parallel work improves the result. Use a distinct `task_name` for each subagent task. The report shows total, distinct, Spark, and repeated subagent calls.
 
 ## Resume a goal
 
@@ -149,4 +153,4 @@ go test ./...
 go build ./...
 ```
 
-Keep tests focused on coaching cadence, plain language, result evidence, revision ordering, and credential transport boundaries.
+Keep tests focused on workload accounting, hook silence, result evidence, revision ordering, concurrency, and credential transport boundaries.

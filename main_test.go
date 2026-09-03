@@ -57,12 +57,7 @@ func TestMechanicalTallyAndActivityScore(t *testing.T) {
 		base["tool_use_id"] = string(rune('a' + i))
 		base["tool_input"] = map[string]any{"command": "git status --short"}
 		out := hook(t, dir, base)
-		if i == 2 && !strings.Contains(hookAdditionalContext(out), "same input again") {
-			t.Fatalf("missing first repetition prompt: %#v", out)
-		}
-		if i == 3 && hookAdditionalContext(out) != "" {
-			t.Fatalf("repetition prompt ignored its cooldown: %#v", out)
-		}
+		assertEmptyHookOutput(t, out)
 	}
 	base["tool_use_id"] = "test-1"
 	base["tool_input"] = map[string]any{"command": "go " + "test ./..."}
@@ -74,7 +69,7 @@ func TestMechanicalTallyAndActivityScore(t *testing.T) {
 	var s state
 	_ = json.Unmarshal(b, &s)
 	if s.Tests != 1 || s.TestPasses != 1 || s.TotalTestMillis != 12_500 || numericScore(s) != 100 {
-		t.Fatalf("unexpected state: %#v coaching_score=%d", s, numericScore(s))
+		t.Fatalf("unexpected state: %#v activity_score=%d", s, numericScore(s))
 	}
 }
 
@@ -100,8 +95,8 @@ func TestPreToolUseNeverDeniesCommands(t *testing.T) {
 			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("allowed-%d", i),
 			"tool_input": map[string]any{"command": command},
 		})
-		if strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) || strings.Contains(string(mustJSON(out)), `"decision":"block"`) {
-			t.Fatalf("command %q was blocked: %#v", command, out)
+		if len(out) != 0 {
+			t.Fatalf("command %q was changed or annotated: %#v", command, out)
 		}
 	}
 }
@@ -111,73 +106,6 @@ func TestStructuredResultIsAuthoritative(t *testing.T) {
 	known, succeeded := explicitResponseResult(raw)
 	if !known || !succeeded {
 		t.Fatalf("structured exit result was not accepted: known=%v succeeded=%v", known, succeeded)
-	}
-}
-
-func TestMarkedCommandPreservesExitStatus(t *testing.T) {
-	for _, shell := range []string{"bash", "zsh"} {
-		for _, test := range []struct {
-			name      string
-			command   string
-			succeeded bool
-		}{
-			{name: "success", command: "printf 'verified\\n'", succeeded: true},
-			{name: "failure", command: "printf 'failed\\n'; false", succeeded: false},
-		} {
-			t.Run(shell+"-"+test.name, func(t *testing.T) {
-				marker := "0123456789abcdef"
-				raw, _ := json.Marshal(map[string]any{"command": test.command})
-				input := markedCommandInput(raw, test.command, marker)
-				wrapped, ok := input["command"].(string)
-				if !ok || wrapped == test.command {
-					t.Fatalf("command was not wrapped: %#v", input)
-				}
-				output, err := exec.Command(shell, "-lec", wrapped).CombinedOutput()
-				if test.succeeded && err != nil {
-					t.Fatalf("successful command failed: %v %s", err, output)
-				}
-				if !test.succeeded && err == nil {
-					t.Fatalf("failing command returned success: %s", output)
-				}
-				known, succeeded := markedResponseResult(string(output), marker)
-				if !known || succeeded != test.succeeded {
-					t.Fatalf("marked result = (%v, %v), want (true, %v): %q", known, succeeded, test.succeeded, output)
-				}
-			})
-		}
-	}
-}
-
-func TestResultMarkerRewriteIsLimitedToCanonicalBash(t *testing.T) {
-	dir := t.TempDir()
-	for _, tool := range []string{"mcp__custom_shell", "terminal_metadata", "functions.exec_command_proxy"} {
-		out := hook(t, dir, map[string]any{
-			"session_id": "s", "turn_id": "tool-scope", "hook_event_name": "PreToolUse",
-			"tool_name": tool, "tool_use_id": tool, "tool_input": map[string]any{"command": "go test ./..."},
-		})
-		if strings.Contains(string(mustJSON(out)), "updatedInput") {
-			t.Fatalf("non-Bash tool %q was rewritten: %#v", tool, out)
-		}
-	}
-}
-
-func TestMatchingResultMarkerRecordsPlainBashResponse(t *testing.T) {
-	dir := t.TempDir()
-	call := event{SessionID: "s", TurnID: "plain-response", ToolUseID: "test"}
-	pre := hook(t, dir, map[string]any{
-		"session_id": call.SessionID, "turn_id": call.TurnID, "hook_event_name": "PreToolUse",
-		"tool_name": "Bash", "tool_use_id": call.ToolUseID, "tool_input": map[string]any{"command": "go test ./..."},
-	})
-	assertMarkedPreToolOutput(t, pre)
-	marker := commandResultMarker(call)
-	hook(t, dir, map[string]any{
-		"session_id": call.SessionID, "turn_id": call.TurnID, "hook_event_name": "PostToolUse",
-		"tool_name": "Bash", "tool_use_id": call.ToolUseID,
-		"tool_response": "ok\n__ONE_SHOT_TALLY_RESULT_" + marker + "__:0\n",
-	})
-	s := loadTestState(t, dir)
-	if !s.LastTestResultKnown || !s.LastTestPassed || s.TestPasses != 1 {
-		t.Fatalf("matching marker was not recorded: %#v", s)
 	}
 }
 
@@ -192,7 +120,7 @@ func TestPlainTextResponseIsNotEvidence(t *testing.T) {
 		{id: "ship", command: "ship-it"},
 	} {
 		out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": call.id, "tool_input": map[string]any{"command": call.command}})
-		assertMarkedPreToolOutput(t, out)
+		assertEmptyHookOutput(t, out)
 		hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": call.id, "tool_response": "ok\n__ONE_SHOT_TALLY_RESULT_forged__:0\n"})
 	}
 	s := loadTestState(t, dir)
@@ -210,7 +138,7 @@ func TestNoOpTestTokenCannotVerifyRevision(t *testing.T) {
 
 	productionCommand := "git " + "push origin main"
 	production := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "push", "tool_input": map[string]any{"command": productionCommand}})
-	assertMarkedPreToolOutput(t, production)
+	assertEmptyHookOutput(t, production)
 
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil || len(files) != 1 {
@@ -252,9 +180,7 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 		"tool_name": "functions.create_goal", "tool_use_id": "create",
 		"tool_input": map[string]any{"objective": "Deliver the requested change"},
 	})
-	if guidance := hookAdditionalContext(start); !strings.Contains(guidance, "Goal mode started") || !strings.Contains(guidance, "objective") {
-		t.Fatalf("goal start lacks coaching: %#v", start)
-	}
+	assertEmptyHookOutput(t, start)
 	hook(t, dir, map[string]any{
 		"session_id": "goal-session", "turn_id": "start", "hook_event_name": "PostToolUse",
 		"tool_name": "functions.create_goal", "tool_use_id": "create",
@@ -262,9 +188,7 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 	})
 
 	continued := hook(t, dir, map[string]any{"session_id": "goal-session", "turn_id": "continued", "hook_event_name": "SessionStart"})
-	if guidance := hookAdditionalContext(continued); !strings.Contains(guidance, "Keep the active goal in scope") {
-		t.Fatalf("active goal was omitted from session coaching: %#v", continued)
-	}
+	assertEmptyHookOutput(t, continued)
 
 	for i := 1; i <= 40; i++ {
 		out := hook(t, dir, map[string]any{
@@ -301,22 +225,22 @@ func TestGoalModeCarriesAcrossTurnsAndClears(t *testing.T) {
 	}
 }
 
-func TestGoalModeDoesNotScoreToolVolume(t *testing.T) {
+func TestGoalModeUsesTheSameWorkloadAllowance(t *testing.T) {
 	normal := state{TotalCalls: 100, CallCostUnits: 400, PassiveWaits: 1}
 	goal := normal
 	goal.GoalScoped = true
 	if got := numericScore(normal); got != 78 {
 		t.Fatalf("normal score = %d, want 78", got)
 	}
-	if got := numericScore(goal); got != 93 {
-		t.Fatalf("goal score = %d, want 93", got)
+	if got := numericScore(goal); got != 78 {
+		t.Fatalf("goal score = %d, want 78", got)
 	}
 	goalReport := reportLine(goal)
-	if !strings.Contains(goalReport, "Mode: /goal; tool-call volume is not scored") || !strings.Contains(goalReport, "Activity score: 93/100 (diagnostic; tool-call volume not scored)") {
+	if !strings.Contains(goalReport, "Mode: goal") || !strings.Contains(goalReport, "Activity score: 78/100 (diagnostic; workload-adjusted)") {
 		t.Fatalf("goal report = %s", goalReport)
 	}
 	normalReport := reportLine(normal)
-	if strings.Contains(normalReport, "/goal") || strings.Contains(normalReport, "volume not scored") || !strings.Contains(normalReport, "Activity score: 78/100 (diagnostic)") {
+	if strings.Contains(normalReport, "Mode: goal") || !strings.Contains(normalReport, "Activity score: 78/100 (diagnostic; workload-adjusted)") {
 		t.Fatalf("normal report = %s", normalReport)
 	}
 	if got := goalTransition(event{ToolName: "functions.update_goal", ToolInput: json.RawMessage(`{"status":"blocked"}`)}); got != "finish" {
@@ -331,22 +255,18 @@ func TestVerifiedStopAdvisesUntilShipItSucceeds(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "last_assistant_message": "Done"})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Run ship-it") {
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Delivery: not recorded") {
 		t.Fatalf("verified stop was not advisory: %#v", out)
 	}
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Run ship-it") {
-		t.Fatalf("repeated verified stop was not advisory: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("premature stop recorded lifetime success: %v", err)
 	}
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stop", "hook_event_name": "Stop", "stop_hook_active": true, "last_assistant_message": "Done"})
-	if out["decision"] == "block" {
-		t.Fatalf("successful ship-it did not close delivery: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 	life, err := loadLifetime()
 	if err != nil {
 		t.Fatal(err)
@@ -365,13 +285,11 @@ func TestUnknownDeliveryStopRemainsAdvisory(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
 
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "Stop"})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "returned no result") || strings.Contains(out["systemMessage"].(string), "Inspect") {
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "result unknown") || strings.Contains(out["systemMessage"].(string), "Inspect") {
 		t.Fatalf("unresolved delivery stop was not advisory: %#v", out)
 	}
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-delivery", "hook_event_name": "Stop", "stop_hook_active": true})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "returned no result") || strings.Contains(out["systemMessage"].(string), "Inspect") {
-		t.Fatalf("repeated unknown delivery stop was not advisory: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unresolved delivery recorded lifetime success: %v", err)
 	}
@@ -383,7 +301,7 @@ func TestUnverifiedStopAdvisesThenVerifiedStopRemainsAdvisory(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "last_assistant_message": "Done"})
 	message, _ := out["systemMessage"].(string)
-	if out["decision"] == "block" || !strings.Contains(message, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(message, "Run the relevant check") {
+	if out["decision"] == "block" || !strings.Contains(message, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(message, "Checks: current changes are not verified") {
 		t.Fatalf("unverified stop was not advisory: %#v", out)
 	}
 	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
@@ -392,7 +310,7 @@ func TestUnverifiedStopAdvisesThenVerifiedStopRemainsAdvisory(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "continue", "hook_event_name": "Stop", "last_assistant_message": "Done"})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Run ship-it") {
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Delivery: not recorded") {
 		t.Fatalf("verified continuation was not advisory: %#v", out)
 	}
 	if _, err := loadLifetime(); !errors.Is(err, os.ErrNotExist) {
@@ -467,9 +385,7 @@ func TestPassiveWaitReportsActivityAndKeepsPenalty(t *testing.T) {
 	out := hook(t, dir, map[string]any{
 		"session_id": "s", "turn_id": "passive", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "wait", "tool_input": map[string]any{"command": "sleep 10"},
 	})
-	if guidance := hookAdditionalContext(out); !strings.Contains(guidance, "Long work can run in the background") {
-		t.Fatalf("passive wait lacks coaching: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("state files: %v, %v", files, err)
@@ -579,7 +495,7 @@ func TestLegacyStateDoesNotInferProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.StateVersion != 4 || recordedOutcome(loaded) != outcomeActivity || finalPassed(loaded) {
+	if loaded.StateVersion != 5 || recordedOutcome(loaded) != outcomeActivity || finalPassed(loaded) {
 		t.Fatalf("legacy state inferred progress: %#v", loaded)
 	}
 }
@@ -604,11 +520,17 @@ func TestStatusMigratesLegacyStateAndOmitsSuccessAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	statusState, ok := report["state"].(map[string]any)
-	if !ok || statusState["state_version"] != float64(4) {
+	if !ok || statusState["state_version"] != float64(5) {
 		t.Fatalf("legacy status was not normalized: %#v", report)
 	}
 	if _, exists := report["success"]; exists {
 		t.Fatalf("status retained ambiguous success alias: %#v", report)
+	}
+	if _, exists := report["coaching_score"]; exists {
+		t.Fatalf("status retained the old coaching score field: %#v", report)
+	}
+	if report["activity_score"] != float64(100) || report["call_allowance"] != float64(30) || report["check_allowance"] != float64(3) {
+		t.Fatalf("status omitted workload accounting: %#v", report)
 	}
 	if report["outcome"] != outcomeActivity || report["verified"] != false {
 		t.Fatalf("legacy status inferred verification: %#v", report)
@@ -669,7 +591,7 @@ func TestVerifiedSmsbridgeScaleRunRemainsSuccess(t *testing.T) {
 	if score := numericScore(s); score != 73 || !finalPassed(s) {
 		t.Fatalf("verified high-cost run lost success: score=%d", score)
 	}
-	if report := reportLine(s); !strings.HasPrefix(report, "Recorded outcome: VERIFIED") || !strings.Contains(report, "Activity score: 73/100 (diagnostic)") || strings.Contains(report, "Discipline score") {
+	if report := reportLine(s); !strings.HasPrefix(report, "Recorded outcome: VERIFIED") || !strings.Contains(report, "Activity score: 73/100 (diagnostic; workload-adjusted)") || strings.Contains(report, "Discipline score") {
 		t.Fatalf("verified run report contradicts completion: %s", report)
 	}
 }
@@ -755,19 +677,6 @@ func assertEmptyHookOutput(t *testing.T, output map[string]any) {
 	}
 }
 
-func assertMarkedPreToolOutput(t *testing.T, output map[string]any) {
-	t.Helper()
-	specific, ok := output["hookSpecificOutput"].(map[string]any)
-	if !ok || specific["permissionDecision"] != "allow" {
-		t.Fatalf("missing marked command response: %#v", output)
-	}
-	updated, ok := specific["updatedInput"].(map[string]any)
-	command, commandOK := updated["command"].(string)
-	if !ok || !commandOK || !strings.Contains(command, "__ONE_SHOT_TALLY_RESULT_") {
-		t.Fatalf("missing result marker: %#v", output)
-	}
-}
-
 func TestSparkCallsAreDiscounted(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 8; i++ {
@@ -783,8 +692,8 @@ func TestSparkCallsAreDiscounted(t *testing.T) {
 	if s.TotalCalls != 37 || s.SparkCalls != 8 || s.CallCostUnits != 124 {
 		t.Fatalf("unexpected Spark accounting: %#v", s)
 	}
-	if got := numericScore(s); got != 99 {
-		t.Fatalf("discounted score = %d, want 99", got)
+	if got := numericScore(s); got != 100 {
+		t.Fatalf("discounted score = %d, want 100", got)
 	}
 	if report := reportLine(s); !strings.Contains(report, "8 Spark; 31 weighted") {
 		t.Fatalf("report omits Spark discount: %q", report)
@@ -807,7 +716,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.20.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally 1.21.0", "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -900,7 +809,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.20.0 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally 1.21.0 | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}
@@ -945,10 +854,7 @@ func TestSuccessfulVerifiedProductionIsRecorded(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 	production := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
-	assertMarkedPreToolOutput(t, production)
-	if !strings.Contains(hookAdditionalContext(production), "confirm the repository") {
-		t.Fatalf("delivery lacks target coaching: %#v", production)
-	}
+	assertEmptyHookOutput(t, production)
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
 	s := loadTestState(t, dir)
 	if s.ProductionCompletions != 1 || !strings.Contains(reportLine(s), "Delivery: 1 completed") {
@@ -1103,9 +1009,7 @@ func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
 	}
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "record", "tool_response": map[string]any{"exit_code": 0}})
 	wait := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "wait", "tool_use_id": "wait", "tool_input": map[string]any{}})
-	if guidance := hookAdditionalContext(wait); !strings.Contains(guidance, "Long work can run in the background") {
-		t.Fatalf("wait lacks coaching: %#v", wait)
-	}
+	assertEmptyHookOutput(t, wait)
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	b, _ := os.ReadFile(files[0])
 	var s state
@@ -1144,12 +1048,10 @@ func TestOpaqueCommandResponsesDoNotAdvanceCounters(t *testing.T) {
 	}
 }
 
-func TestDetachedTmuxWithoutRecordGetsCoaching(t *testing.T) {
+func TestDetachedTmuxWithoutRecordStaysSilent(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "tmux", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "tmux", "tool_input": map[string]any{"command": "tmux new-session -d -s build 'make all'"}})
-	if guidance := hookAdditionalContext(out); !strings.Contains(guidance, "Record this background job") || !strings.Contains(guidance, "cleanup command") {
-		t.Fatalf("detached job lacks coaching: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 }
 
 func TestPassivePollingIsPenalizedButOrdinaryReadIsNot(t *testing.T) {
@@ -1181,41 +1083,23 @@ func TestDirectDeliveryEntrypointRemovalIsNotBlocked(t *testing.T) {
 	}
 }
 
-func TestSessionStartUsesPlainCoaching(t *testing.T) {
+func TestSessionStartIsSilent(t *testing.T) {
 	dir := t.TempDir()
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "guidance", "hook_event_name": "SessionStart"})
-	guidance := hookAdditionalContext(out)
-	for _, want := range []string{"Finish the current request", "Verify changes", "Use ship-it"} {
-		if !strings.Contains(guidance, want) {
-			t.Fatalf("session coaching missing %q: %#v", want, out)
-		}
-	}
-	if len(guidance) > 160 {
-		t.Fatalf("session coaching is too long: %q", guidance)
-	}
+	assertEmptyHookOutput(t, out)
 }
 
-func TestUserPromptSubmitCoachesCorrections(t *testing.T) {
+func TestUserPromptSubmitIsSilent(t *testing.T) {
 	dir := t.TempDir()
 	ordinary := hook(t, dir, map[string]any{"session_id": "ordinary", "turn_id": "prompt", "hook_event_name": "UserPromptSubmit", "prompt": "Please finish the report"})
 	assertEmptyHookOutput(t, ordinary)
-	corrections := []struct {
-		prompt string
-		want   string
-	}{
-		{prompt: "Use repository B, not repository A.", want: "Apply the correction"},
-		{prompt: "Actually, switch from main to release.", want: "Another correction came in"},
-		{prompt: "No, stop and recheck the repository.", want: "Corrections are repeating"},
-	}
-	for index, correction := range corrections {
-		out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": fmt.Sprintf("prompt-%d", index), "hook_event_name": "UserPromptSubmit", "prompt": correction.prompt})
-		if guidance := hookAdditionalContext(out); !strings.Contains(guidance, correction.want) || len(guidance) > 100 {
-			t.Fatalf("correction %d coaching = %#v", index+1, out)
-		}
+	for index, prompt := range []string{"Use repository B, not repository A.", "Actually, switch from main to release.", "No, stop and recheck the repository."} {
+		out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": fmt.Sprintf("prompt-%d", index), "hook_event_name": "UserPromptSubmit", "prompt": prompt})
+		assertEmptyHookOutput(t, out)
 	}
 }
 
-func TestCorrectionCoachingResetsAfterProgress(t *testing.T) {
+func TestPromptSilencePersistsAfterProgress(t *testing.T) {
 	dir := t.TempDir()
 	for _, prompt := range []string{"Stop, use the other repository.", "Wrong repository again."} {
 		hook(t, dir, map[string]any{"session_id": "s", "turn_id": prompt, "hook_event_name": "UserPromptSubmit", "prompt": prompt})
@@ -1223,13 +1107,10 @@ func TestCorrectionCoachingResetsAfterProgress(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "work", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "progress"}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "work", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "after", "hook_event_name": "UserPromptSubmit", "prompt": "Stop, use the corrected repository."})
-	guidance := hookAdditionalContext(out)
-	if !strings.Contains(guidance, "Apply the correction") || strings.Contains(guidance, "Another correction") {
-		t.Fatalf("progress did not reset correction coaching: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 }
 
-func TestSixthCheckGetsReusePrompt(t *testing.T) {
+func TestSixthCheckStaysSilent(t *testing.T) {
 	dir := t.TempDir()
 	var out map[string]any
 	for i := 1; i <= 6; i++ {
@@ -1239,33 +1120,10 @@ func TestSixthCheckGetsReusePrompt(t *testing.T) {
 			"tool_input": map[string]any{"command": fmt.Sprintf("go test ./... -count=%d", i)},
 		})
 	}
-	if guidance := hookAdditionalContext(out); !strings.Contains(guidance, "sixth test run") || !strings.Contains(guidance, "Reuse passing results") {
-		t.Fatalf("sixth check lacks reuse coaching: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 }
 
-func TestSparkReviewUsesSessionEvidenceOnce(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("ONE_SHOT_STATE_DIR", dir)
-	verified := state{Revision: 2, SuccessfulEdits: 2, LastEditResultKnown: true, LastEditSucceeded: true, LastEditResultRevision: 2, VerifiedRevision: 2, Tests: 1, TestPasses: 1, LastTestPassed: true, LastTestResultKnown: true}
-	first, err := claimSparkRoutingReview("unused", verified)
-	if err != nil || !strings.Contains(first, "No Spark worker was used") || !strings.Contains(first, "independent, low-risk edit") {
-		t.Fatalf("Spark review = %q, err=%v", first, err)
-	}
-	second, err := claimSparkRoutingReview("unused", verified)
-	if err != nil || second != "" {
-		t.Fatalf("Spark review repeated: %q, err=%v", second, err)
-	}
-	if err := recordSessionSparkCall("used"); err != nil {
-		t.Fatal(err)
-	}
-	used, err := claimSparkRoutingReview("used", verified)
-	if err != nil || used != "" {
-		t.Fatalf("Spark use still received a review: %q, err=%v", used, err)
-	}
-}
-
-func TestHookCoachingUsesPlainLanguage(t *testing.T) {
+func TestHookOutputUsesPlainLanguage(t *testing.T) {
 	dir := t.TempDir()
 	var texts []string
 	texts = append(texts, hookAdditionalContext(hook(t, dir, map[string]any{"session_id": "session", "turn_id": "start", "hook_event_name": "SessionStart"})))
@@ -1285,41 +1143,31 @@ func TestHookCoachingUsesPlainLanguage(t *testing.T) {
 		lower := strings.ToLower(text)
 		for _, banned := range []string{"authorization", "authorized handoff", "deployment trust", "never a gate", "only the user", "cannot infer", "cannot assess"} {
 			if strings.Contains(lower, banned) {
-				t.Fatalf("coaching contains %q: %q", banned, text)
+				t.Fatalf("hook output contains %q: %q", banned, text)
 			}
 		}
 		if !strings.Contains(text, "\n") && len(text) > 260 {
-			t.Fatalf("coaching is too long: %q", text)
+			t.Fatalf("hook output is too long: %q", text)
 		}
 	}
 }
 
-func TestRepeatedCallsUsePacedCoachingAndResetAfterProgress(t *testing.T) {
+func TestRepeatedCallsStaySilentAndResetAfterProgress(t *testing.T) {
 	dir := t.TempDir()
-	wants := map[int]string{2: "same input again", 4: "repeated this input four times", 7: "keeps repeating this input"}
 	for i := 1; i <= 7; i++ {
 		out := hook(t, dir, map[string]any{
 			"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse",
 			"tool_name": "Bash", "tool_use_id": fmt.Sprintf("read-%d", i),
 			"tool_input": map[string]any{"command": "git status --short"},
 		})
-		guidance := strings.ToLower(hookAdditionalContext(out))
-		if want, ok := wants[i]; ok {
-			if !strings.Contains(guidance, want) {
-				t.Fatalf("call %d missing %q: %#v", i, want, out)
-			}
-		} else if guidance != "" {
-			t.Fatalf("call %d ignored coaching cooldown: %#v", i, out)
-		}
+		assertEmptyHookOutput(t, out)
 	}
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "progress"}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
 	first := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "after-1", "tool_input": map[string]any{"command": "git status --short"}})
 	second := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "repeat", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "after-2", "tool_input": map[string]any{"command": "git status --short"}})
 	assertNoAdditionalContext(t, first)
-	if !strings.Contains(hookAdditionalContext(second), "same input again") {
-		t.Fatalf("progress did not reset repeated-call cadence: first=%#v second=%#v", first, second)
-	}
+	assertEmptyHookOutput(t, second)
 }
 
 func TestDeliveryInvocationClassification(t *testing.T) {
@@ -1408,7 +1256,7 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 			if ready["decision"] == "block" {
 				t.Fatalf("verified undelivered stop was not advisory: %#v", ready)
 			}
-			if !strings.Contains(message, "Recorded outcome: VERIFIED") || !strings.Contains(message, "Run ship-it") {
+			if !strings.Contains(message, "Recorded outcome: VERIFIED") || !strings.Contains(message, "Delivery: not recorded") {
 				t.Fatalf("verified stop did not close shipping loop: %#v", ready)
 			}
 			if strings.Contains(strings.ToLower(message), "authorization") || strings.Contains(strings.ToLower(message), "trust") {
@@ -1418,10 +1266,10 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
 			done := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "Stop"})
 			doneMessage := done["systemMessage"].(string)
-			if withContract && (!strings.Contains(doneMessage, "Shipping is recorded") || !strings.Contains(doneMessage, "Confirm deployment")) {
+			if withContract && !strings.Contains(doneMessage, "shipping recorded; deployment result unknown") {
 				t.Fatalf("successful shipping did not preserve deploy proof boundary: %#v", done)
 			}
-			if !withContract && !strings.Contains(doneMessage, "No deployment setup is configured") {
+			if !withContract && !strings.Contains(doneMessage, "shipping recorded; no deployment contract") {
 				t.Fatalf("successful shipping not recorded: %#v", done)
 			}
 			if done["decision"] == "block" {
@@ -1487,7 +1335,7 @@ func TestOutOfOrderEditResultsFollowNewestRevision(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0}})
 			out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
-			shipReady := strings.Contains(out["systemMessage"].(string), "Run ship-it")
+			shipReady := strings.Contains(out["systemMessage"].(string), "Delivery: not recorded")
 			if shipReady != test.wantShipReady {
 				t.Fatalf("newest revision result was overwritten: ready=%v output=%#v", shipReady, out)
 			}
@@ -1508,14 +1356,11 @@ func TestFailedShipOrDeployGivesRecoveryCoaching(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "delivery", "tool_response": map[string]any{"exit_code": 1}})
 			out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
 			message := out["systemMessage"].(string)
-			if out["decision"] == "block" || !strings.Contains(message, "failed") || !strings.Contains(message, "before retrying") || strings.Contains(strings.ToLower(message), "authorization") || strings.Contains(strings.ToLower(message), "trust") {
-				t.Fatalf("failed delivery coaching was wrong: %#v", out)
+			if out["decision"] == "block" || !strings.Contains(message, "failed") || strings.Contains(strings.ToLower(message), "authorization") || strings.Contains(strings.ToLower(message), "trust") {
+				t.Fatalf("failed delivery status was wrong: %#v", out)
 			}
 			out = hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
-			message = out["systemMessage"].(string)
-			if out["decision"] == "block" || !strings.Contains(message, "failed") || !strings.Contains(message, "before retrying") {
-				t.Fatalf("repeated failed delivery stop was not advisory: %#v", out)
-			}
+			assertEmptyHookOutput(t, out)
 		})
 	}
 }
@@ -1534,8 +1379,8 @@ func TestFailedDeliveryWithoutLocalEditKeepsSpecificGuidance(t *testing.T) {
 			})
 			out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": command, "hook_event_name": "Stop"})
 			message := out["systemMessage"].(string)
-			if !strings.Contains(message, "Recorded outcome: FAILED") || !strings.Contains(message, "failed") || !strings.Contains(message, "before retrying") || strings.Contains(strings.ToLower(message), "authorization") {
-				t.Fatalf("failed delivery without edit lost recovery coaching: %#v", out)
+			if !strings.Contains(message, "Recorded outcome: FAILED") || !strings.Contains(message, "failed") || strings.Contains(strings.ToLower(message), "authorization") {
+				t.Fatalf("failed delivery without edit lost status: %#v", out)
 			}
 		})
 	}
@@ -1581,15 +1426,16 @@ func TestSuccessfulDeployResolvesEarlierShipFailure(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_input": map[string]any{"command": "ship-it"}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 1}})
 	blocked := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
-	if blocked["decision"] == "block" || !strings.Contains(blocked["systemMessage"].(string), "ship-it failed") || !strings.Contains(blocked["systemMessage"].(string), "before retrying") {
+	if blocked["decision"] == "block" || !strings.Contains(blocked["systemMessage"].(string), "ship-it failed") {
 		t.Fatalf("failed ship-it was not advisory: %#v", blocked)
 	}
 	preDeploy := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_input": map[string]any{"command": "deploy-it --commit " + head + " --branch main"}})
-	assertMarkedPreToolOutput(t, preDeploy)
+	assertEmptyHookOutput(t, preDeploy)
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_response": map[string]any{"exit_code": 0}})
 	done := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop", "stop_hook_active": true})
-	if done["decision"] == "block" || !strings.Contains(strings.ToLower(done["systemMessage"].(string)), "shipping and deployment are recorded") || strings.Contains(done["systemMessage"].(string), "ship-it failed") || strings.Contains(done["systemMessage"].(string), "deploy-it failed") {
-		t.Fatalf("successful deploy-it did not resolve earlier ship failure: %#v", done)
+	assertEmptyHookOutput(t, done)
+	if !recoveredCurrentDeployment(loadTestState(t, dir)) {
+		t.Fatalf("successful deploy-it did not resolve earlier ship failure")
 	}
 }
 
@@ -1607,7 +1453,7 @@ func TestLaterVerifiedEditRequiresNewShip(t *testing.T) {
 		}
 	}
 	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Run ship-it") {
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "Recorded outcome: VERIFIED") || !strings.Contains(out["systemMessage"].(string), "Delivery: not recorded") {
 		t.Fatalf("later verified edit inherited older delivery: %#v", out)
 	}
 }
@@ -1624,7 +1470,7 @@ func TestFailedShipCorrectiveEditStillAdvisesBeforeReverification(t *testing.T) 
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "fix", "tool_input": map[string]any{"patch": "fix"}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "fix", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
-	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "ship-it failed") || !strings.Contains(out["systemMessage"].(string), "before retrying") {
+	if out["decision"] == "block" || !strings.Contains(out["systemMessage"].(string), "ship-it failed") {
 		t.Fatalf("corrective edit lost unresolved delivery guidance: %#v", out)
 	}
 }
@@ -1649,7 +1495,7 @@ func TestFailedProductionActionPersistsAfterUnrelatedSuccess(t *testing.T) {
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "push-failure", "hook_event_name": "Stop"})
 	message := out["systemMessage"].(string)
-	if !strings.Contains(message, "Recorded outcome: FAILED") || !strings.Contains(message, "Delivery failed") || !strings.Contains(message, "before retrying") {
+	if !strings.Contains(message, "Recorded outcome: FAILED") || !strings.Contains(message, "Delivery: failed") {
 		t.Fatalf("unresolved production failure was overwritten: %#v", out)
 	}
 }
@@ -1666,7 +1512,7 @@ func TestNewPendingDeliveryInvalidatesOlderSuccess(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "pending-ship", "tool_input": map[string]any{"command": "ship-it"}})
 	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
 	message := out["systemMessage"].(string)
-	if !strings.Contains(message, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(message, "returned no result") || strings.Contains(message, "Recorded outcome: VERIFIED") || strings.Contains(message, "Shipping is recorded") {
+	if !strings.Contains(message, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(message, "result unknown") || strings.Contains(message, "Recorded outcome: VERIFIED") || strings.Contains(message, "shipping recorded") {
 		t.Fatalf("pending delivery inherited an older success: %#v", out)
 	}
 }
@@ -1679,9 +1525,7 @@ func TestConcreteProgressResetsPassiveWaitTone(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "progress"}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "waits", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "wait-after", "tool_input": map[string]any{"command": "sleep 99"}})
-	if guidance := hookAdditionalContext(out); !strings.Contains(guidance, "Long work can run in the background") || strings.Contains(guidance, "still repeating") {
-		t.Fatalf("progress did not reset passive-wait coaching: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 }
 
 func TestExternalMutationGetsTargetCheckWithoutBlocking(t *testing.T) {
@@ -1691,31 +1535,25 @@ func TestExternalMutationGetsTargetCheckWithoutBlocking(t *testing.T) {
 			"session_id": "s", "turn_id": fmt.Sprintf("target-%d", i), "hook_event_name": "PreToolUse",
 			"tool_name": "Bash", "tool_use_id": "action", "tool_input": map[string]any{"command": command},
 		})
-		guidance := hookAdditionalContext(out)
-		if !strings.Contains(guidance, "confirm the repository, destination, revision, and expected result") {
-			t.Fatalf("missing target coaching for %q: %#v", command, out)
-		}
-		if strings.Contains(string(mustJSON(out)), `"decision":"block"`) || strings.Contains(string(mustJSON(out)), `"permissionDecision":"deny"`) {
-			t.Fatalf("target coaching blocked %q: %#v", command, out)
-		}
+		assertEmptyHookOutput(t, out)
 	}
 }
 
-func TestDuplicateSubagentAndFailedCheckEditsGetAdvisoryCoaching(t *testing.T) {
+func TestDuplicateSubagentAndFailedCheckEditsStaySilent(t *testing.T) {
 	dir := t.TempDir()
 	input := map[string]any{"agent_type": "explorer", "task_name": "scan", "message": "scan repo"}
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "workers", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": "one", "tool_input": input})
 	duplicate := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "workers", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": "two", "tool_input": input})
-	if guidance := hookAdditionalContext(duplicate); !strings.Contains(guidance, "identical worker") || !strings.Contains(guidance, "different task") {
-		t.Fatalf("duplicate worker coaching = %#v", duplicate)
+	assertEmptyHookOutput(t, duplicate)
+	workerState := loadTestState(t, dir)
+	if workerState.AgentCalls != 2 || workerState.DistinctAgentTasks != 1 || workerState.RepeatedAgentCalls != 1 {
+		t.Fatalf("duplicate worker accounting = %#v", workerState)
 	}
 
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failure", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_input": map[string]any{"command": "go test ./..."}})
 	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failure", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 1}})
 	edit := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failure", "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "fix"}})
-	if guidance := hookAdditionalContext(edit); !strings.Contains(guidance, "failed check") || !strings.Contains(guidance, "Rerun the affected check") {
-		t.Fatalf("failed-check edit coaching = %#v", edit)
-	}
+	assertEmptyHookOutput(t, edit)
 }
 
 func TestActiveGoalIsNotReportedComplete(t *testing.T) {
@@ -1834,9 +1672,7 @@ func TestSessionStartReconcilesGoalFromActiveAccount(t *testing.T) {
 		t.Fatalf("completed account goal left stale marker: %#v", completed)
 	}
 	active := hook(t, dir, map[string]any{"session_id": "thread-active", "turn_id": "resume", "hook_event_name": "SessionStart"})
-	if !strings.Contains(hookAdditionalContext(active), "Keep the active goal in scope") {
-		t.Fatalf("active account goal lacks session coaching: %#v", active)
-	}
+	assertEmptyHookOutput(t, active)
 	if goalActive, err := sessionGoalActive("thread-active"); err != nil || !goalActive {
 		t.Fatalf("active account goal was not recognized: active=%v err=%v", goalActive, err)
 	}
@@ -1860,9 +1696,7 @@ func TestSessionStartReconcilesStaleGoalMarkerFromCodex(t *testing.T) {
 	}
 
 	out = hook(t, dir, map[string]any{"session_id": "thread-active", "turn_id": "resume", "hook_event_name": "SessionStart"})
-	if !strings.Contains(hookAdditionalContext(out), "Keep the active goal in scope") {
-		t.Fatalf("active native goal lacks session coaching: %#v", out)
-	}
+	assertEmptyHookOutput(t, out)
 	if goalActive, err := sessionGoalActive("thread-active"); err != nil || !goalActive {
 		t.Fatalf("active native goal was not recognized: active=%v err=%v", goalActive, err)
 	}
@@ -1909,6 +1743,10 @@ func TestTodoLifecycleIsDurableAndDeduplicated(t *testing.T) {
 	if err := todoCommand([]string{"add", "Investigate alternate transport", "--context", "duplicate"}, &out); err == nil {
 		t.Fatal("duplicate TODO was accepted")
 	}
+	items, err = loadTodos()
+	if err != nil || items[id].AddAttempts != 2 || items[id].DuplicateAdds != 1 {
+		t.Fatalf("duplicate attempts were not recorded: %#v err=%v", items[id], err)
+	}
 	out.Reset()
 	if err := todoCommand([]string{"list"}, &out); err != nil || !strings.Contains(out.String(), id+"\topen") {
 		t.Fatalf("open list=%q err=%v", out.String(), err)
@@ -1929,15 +1767,19 @@ func TestTodoLifecycleIsDurableAndDeduplicated(t *testing.T) {
 	}
 }
 
-func TestTodoParkingRewardRequiresVerifiedCurrentOutcome(t *testing.T) {
+func TestWorkloadAllowanceRewardsCompletionNotInflation(t *testing.T) {
 	verified := state{Revision: 1, LastEditResultKnown: true, LastEditSucceeded: true, LastEditResultRevision: 1, VerifiedRevision: 1, Tests: 1, TestPasses: 1, LastTestPassed: true, LastTestResultKnown: true, TodosParked: 2}
-	if got := numericScore(verified); got != 96 {
-		t.Fatalf("verified parking score=%d, want 96", got)
+	if calls, checks := workloadAllowance(verified); calls != 40 || checks != 5 || numericScore(verified) != 92 {
+		t.Fatalf("open plan allowance=(%d,%d) score=%d", calls, checks, numericScore(verified))
 	}
-	capped := verified
-	capped.TodosParked = 20
-	if got := numericScore(capped); got != 98 {
-		t.Fatalf("parking reward cap score=%d, want 98", got)
+	verified.TodosCompleted = 2
+	if calls, checks := workloadAllowance(verified); calls != 44 || checks != 5 || numericScore(verified) != 96 {
+		t.Fatalf("completed plan allowance=(%d,%d) score=%d", calls, checks, numericScore(verified))
+	}
+	verified.TodoAddFailures = 2
+	verified.RepeatedTodoAdds = 2
+	if got := numericScore(verified); got != 88 {
+		t.Fatalf("failed and repeated adds did not reduce score: %d", got)
 	}
 	unverified := state{Revision: 1, TodosParked: 20}
 	if got := numericScore(unverified); got != 25 {
@@ -1953,18 +1795,119 @@ func TestHookCountsSuccessfulTodoTransitions(t *testing.T) {
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "done", "tool_input": map[string]any{"command": "one-shot-tally todo done abc123"}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "done", "tool_response": map[string]any{"exit_code": 0}})
 	s := loadTestState(t, dir)
-	if s.TodosParked != 1 || s.TodosCompleted != 1 || !strings.Contains(reportLine(s), "TODOs: 1 saved; 1 completed") {
+	if s.TodosParked != 1 || s.TodosCompleted != 1 || s.TodoAddAttempts != 1 || !strings.Contains(reportLine(s), "Work items: 1 planned; 1 completed; 0 open; 1 add attempts") {
 		t.Fatalf("TODO hook state=%#v report=%s", s, reportLine(s))
 	}
+}
+
+func TestDurableWorkItemsDriveTheReportAcrossTurns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	var out bytes.Buffer
+	if err := todoCommand([]string{"add", "First result", "--context", "part one"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := todoCommand([]string{"add", "Second result", "--context", "part two"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := todoCommand([]string{"add", "First result", "--context", "duplicate"}, &out); err == nil {
+		t.Fatal("duplicate TODO was accepted")
+	}
+	items, err := loadTodos()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, item := range items {
+		if item.Text == "First result" {
+			if err := todoCommand([]string{"done", id}, &out); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	report := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "later", "cwd": mustProjectSource(t), "hook_event_name": "Stop"})
+	message := report["systemMessage"].(string)
+	for _, want := range []string{"42 allowed", "5 allowed", "Work items: 2 planned; 1 completed; 1 open; 3 add attempts; 1 repeated adds"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("durable plan report missing %q: %s", want, message)
+		}
+	}
+}
+
+func TestMaskedTodoCommandsDoNotChangePlanAccounting(t *testing.T) {
+	dir := t.TempDir()
+	command := "one-shot-tally todo add later --context outside || true"
+	pre := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "masked", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "add", "tool_input": map[string]any{"command": command}})
+	assertEmptyHookOutput(t, pre)
+	hook(t, dir, map[string]any{"session_id": "s", "turn_id": "masked", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "add", "tool_response": map[string]any{"exit_code": 0}})
+	s := loadTestState(t, dir)
+	if s.TodoAddAttempts != 0 || s.TodosParked != 0 {
+		t.Fatalf("masked TODO command changed plan accounting: %#v", s)
+	}
+}
+
+func TestDistinctAgentTasksExpandOnlyCoordinationAllowance(t *testing.T) {
+	s := state{TodosParked: 3, AgentCalls: 3, DistinctAgentTasks: 2, RepeatedAgentCalls: 1}
+	if calls, checks := workloadAllowance(s); calls != 47 || checks != 6 {
+		t.Fatalf("delegated allowance=(%d,%d), want (47,6)", calls, checks)
+	}
+	report := reportLine(s)
+	if !strings.Contains(report, "Delegation: 3 calls; 2 distinct tasks; 0 Spark; 1 repeated calls") {
+		t.Fatalf("delegation report = %s", report)
+	}
+	nonAgent := event{ToolName: "spark_database", ToolInput: json.RawMessage(`{"model":"spark"}`)}
+	if isSparkCall(nonAgent) {
+		t.Fatal("non-agent tool received a Spark discount")
+	}
+}
+
+func TestConcurrentTodoAddsPreserveEveryItem(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ONE_SHOT_STATE_DIR", dir)
+	const count = 16
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			errs <- addTodo(fmt.Sprintf("Concurrent result %d", index), "parallel test", io.Discard)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := loadTodos()
+	if err != nil || len(items) != count {
+		t.Fatalf("concurrent items=%d err=%v", len(items), err)
+	}
+}
+
+func mustProjectSource(t *testing.T) string {
+	t.Helper()
+	source, err := projectSource("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }
 
 func loadTestState(t *testing.T, dir string) state {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil || len(files) != 1 {
+	var stateFiles []string
+	for _, file := range files {
+		if filepath.Base(file) != "lifetime.json" && filepath.Base(file) != "todos.json" && filepath.Base(file) != "background-jobs.json" {
+			stateFiles = append(stateFiles, file)
+		}
+	}
+	if err != nil || len(stateFiles) != 1 {
 		t.Fatalf("state files: %v err=%v", files, err)
 	}
-	b, err := os.ReadFile(files[0])
+	b, err := os.ReadFile(stateFiles[0])
 	if err != nil {
 		t.Fatal(err)
 	}
