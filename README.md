@@ -1,6 +1,6 @@
 # one-shot-tally
 
-`one-shot-tally` records observable Codex work and returns short, advisory coaching. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
+`one-shot-tally` records observable Codex work and returns a short status at Stop. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
 
 The record helps identify repeated calls, passive waiting, redundant tests, unfinished background work, and missing verification. It does not understand product intent, prove service health, decide whether a goal is complete, or block an agent from stopping.
 
@@ -11,19 +11,19 @@ Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved.
 - `NO OBSERVED WORK`: no tool activity was recorded.
 - `ACTIVITY OBSERVED`: activity occurred without verified current edits.
 - `FAILED`: a recorded action or check has an explicit unresolved failure.
-- `VERIFIED`: the current edit completed and a later standalone check passed without changing the Git-visible worktree.
+- `VERIFIED`: the current edit completed and a later standalone local check passed without changing the Git-visible worktree. Stop reports this as `LOCAL CHECK PASSED`.
 
-The coaching score is advisory. It does not change the recorded outcome.
+The activity score is diagnostic. It does not change the recorded outcome.
 
 ## Hook behavior
 
-- `SessionStart` adds one short reminder to finish the current request and verify changes.
-- `UserPromptSubmit` is quiet unless it detects a correction.
-- `PreToolUse` records calls and adds a private result marker to recognized Bash checks and delivery commands.
-- `PostToolUse` records structured results or a matching private marker. Plain output text is not proof of success.
-- `Stop` reports the current outcome and any unfinished delivery. It never returns `decision:block`.
+- `SessionStart` updates goal state without adding instructions.
+- `UserPromptSubmit` is silent.
+- `PreToolUse` records calls silently. It never changes or authorizes a command.
+- `PostToolUse` records explicit structured results, such as an exit code. Plain output text is not proof of success.
+- `Stop` gives a short outcome and delivery status. Detailed metrics remain available through `status` and `grade`. Stop never returns `decision:block`.
 
-Correction and repetition messages use a widening cadence and reset after a successful edit or check. Goal mode does not score tool-call volume. The hook does not start `ship-it`, `deploy-it`, or any other delivery command.
+Goal mode does not score tool-call volume. The hook records delivery state but does not direct or start `ship-it`, `deploy-it`, or any other delivery command.
 
 ## Commands
 
@@ -135,4 +135,4 @@ go test ./...
 go build ./...
 ```
 
-Keep tests focused on behavior: quiet ordinary prompts, concise guidance, explicit result evidence, revision ordering, advisory stops, and credential transport boundaries.
+Keep tests focused on behavior: silent ordinary events, concise status, explicit result evidence, revision ordering, and credential transport boundaries.

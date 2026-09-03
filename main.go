@@ -13,18 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-const binaryVersion = "1.17.0"
-
-const subagentGuidance = "Delegate independent work. Keep authorization and acceptance in the main thread."
-
-const sparkGuidance = "Use Spark only for an exact, low-risk edit with separate files and clear validation."
-
-const acceptanceGuidance = "Use existing user authorization for matching trusted deployments. Only the user can authorize a new target or deployment trust."
+const binaryVersion = "1.18.0"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -32,10 +25,7 @@ var (
 	// verification for the current revision.
 	testRE               = regexp.MustCompile(`(?i)(^|[;&|])\s*([a-z_][a-z0-9_]*=\S+\s+)*(pytest|go\s+test|cargo\s+test|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|rspec|phpunit|gradle\w*\s+test|mvn\w*\s+test|make\s+(test|check|verify)|(verify|check)(\.sh)?|(\./|[^\s;&|]+/)(test|tests|verify|check)(\.sh)?)([;&|\s]|$)`)
 	readRE               = regexp.MustCompile(`(?i)^\s*(rg|grep|find|fd|sed\s+-n|head|tail|ls|stat|cat\s|git\s+(status|diff|log|show|branch|rev-parse|worktree\s+list))`)
-	externalMutationRE   = regexp.MustCompile(`(?i)(curl\b[^\n]*(--request|-X)\s*(POST|PUT|PATCH|DELETE)\b|gh\s+api\b[^\n]*(--method|-X)\s*(POST|PUT|PATCH|DELETE)\b|\b(bw|op|vault)\b[^\n]*\b(create|delete|edit|update|move)\b|docker\s+(service\s+update|stack\s+deploy)|kubectl\s+(apply|delete)|terraform\s+apply)`)
 	passiveWaitRE        = regexp.MustCompile(`(?i)^\s*(sleep\b|watch\b|tail\s+-f\b|while\b.*\bsleep\b|until\b.*\bsleep\b|tmux\s+(capture-pane|list-panes|list-sessions|has-session)\b)`)
-	detachedTmuxRE       = regexp.MustCompile(`(?i)\btmux\s+(new-session|new)\b[^\n]*(\s-d\b|-d\s)`)
-	correctionScopeRE    = regexp.MustCompile(`(?i)\b(repo|repository|target|branch|worktree|workspace|directory|folder|environment|production|staging|deploy|deployment|file|edit|codebase|correction)\b`)
 	gitCommitRE          = regexp.MustCompile(`(?i)^\s*git\s+commit\b`)
 	backgroundRecordRE   = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+record\b`)
 	backgroundCompleteRE = regexp.MustCompile(`(?i)(^|[;&|]\s*)(\S*/)?one-shot-tally\s+background\s+complete\b`)
@@ -79,7 +69,6 @@ type pendingCall struct {
 	Shipping           bool      `json:"shipping,omitempty"`
 	Deploying          bool      `json:"deploying,omitempty"`
 	DeployCommitMatch  bool      `json:"deploy_commit_match,omitempty"`
-	ResultMarker       string    `json:"result_marker,omitempty"`
 	TestEligible       bool      `json:"test_eligible,omitempty"`
 	WorktreeKnown      bool      `json:"worktree_known,omitempty"`
 	WorktreeSnapshot   string    `json:"worktree_snapshot,omitempty"`
@@ -148,12 +137,6 @@ type state struct {
 	GoalScoped                   bool                   `json:"goal_scoped"`
 }
 
-type sessionSteer struct {
-	CorrectionStreak int  `json:"correction_streak"`
-	SparkCalls       int  `json:"spark_calls"`
-	SparkReviewShown bool `json:"spark_review_shown"`
-}
-
 type backgroundJob struct {
 	ID          string    `json:"id"`
 	Cleanup     string    `json:"cleanup"`
@@ -197,18 +180,10 @@ type codexGoal struct {
 	UpdatedAtMS int64  `json:"updated_at_ms"`
 }
 
-type hookSpecificOutput struct {
-	HookEventName      string         `json:"hookEventName"`
-	AdditionalContext  string         `json:"additionalContext,omitempty"`
-	PermissionDecision string         `json:"permissionDecision,omitempty"`
-	UpdatedInput       map[string]any `json:"updatedInput,omitempty"`
-}
-
 type hookOutput struct {
-	Decision           string              `json:"decision,omitempty"`
-	Reason             string              `json:"reason,omitempty"`
-	SystemMessage      string              `json:"systemMessage,omitempty"`
-	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	Decision      string `json:"decision,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	SystemMessage string `json:"systemMessage,omitempty"`
 }
 
 func main() {
@@ -264,7 +239,7 @@ func printVersion(w io.Writer) {
 }
 
 func printHelp(w io.Writer) {
-	fmt.Fprintln(w, "one-shot-tally - mechanical one-shot delivery hook")
+	fmt.Fprintln(w, "one-shot-tally - activity and delivery status hook")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  one-shot-tally                  process a hook event from stdin")
@@ -276,7 +251,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "                                  mark complete; --wake notifies the recorded tmux pane")
 	fmt.Fprintln(w, "  one-shot-tally background list  list recorded background jobs and cleanup commands")
 	fmt.Fprintln(w, "  one-shot-tally todo add TEXT --context WHY")
-	fmt.Fprintln(w, "                                  park discovered out-of-scope work and return to the goal")
+	fmt.Fprintln(w, "                                  record deferred work with its context")
 	fmt.Fprintln(w, "  one-shot-tally todo list [--all] list open deferred work, or include completed items")
 	fmt.Fprintln(w, "  one-shot-tally todo done ID      complete one deferred item")
 	fmt.Fprintln(w, "  one-shot-tally goal list [--all] list resumable goals, or all goals")
@@ -289,8 +264,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  one-shot-tally version          show the version")
 	fmt.Fprintln(w, "  one-shot-tally help|-h|--help   show this help")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Guidance: finish the requested outcome, verify edits, and treat the score as advisory.")
-	fmt.Fprintln(w, "Use goal resume to recover an objective; Codex must create the resumed goal.")
+	fmt.Fprintln(w, "Status and scores report observed events; they do not direct work.")
+	fmt.Fprintln(w, "Use goal resume to print a saved objective for create_goal.")
 }
 
 func runHook(r io.Reader, w io.Writer) error {
@@ -303,20 +278,13 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the current request and verify changes. Stay in the current repository unless the user names another target. Tally coaching is advisory."
-		goalActive, err := reconcileSessionGoal(e.SessionID)
+		_, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
 		}
-		if goalActive {
-			context += " Goal active: keep its full objective and close it only after verification."
-		}
-		return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName:     "SessionStart",
-			AdditionalContext: context,
-		}})
+		return writeJSON(w, hookOutput{})
 	case "UserPromptSubmit":
-		return userPromptSubmit(e, w)
+		return writeJSON(w, hookOutput{})
 	case "PreToolUse":
 		return preToolUse(e, w)
 	case "PostToolUse":
@@ -326,70 +294,6 @@ func runHook(r io.Reader, w io.Writer) error {
 	default:
 		return writeJSON(w, hookOutput{})
 	}
-}
-
-func userPromptSubmit(e event, w io.Writer) error {
-	p, err := sessionSteerPath(e.SessionID)
-	if err != nil {
-		return err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil {
-		return err
-	}
-	if !correctionPrompt(e.Prompt) {
-		return writeJSON(w, hookOutput{})
-	}
-	steer.CorrectionStreak++
-	if err := saveSessionSteer(p, steer); err != nil {
-		return err
-	}
-	context := correctionGuidance(steer.CorrectionStreak)
-	return writeJSON(w, hookOutput{HookSpecificOutput: &hookSpecificOutput{
-		HookEventName:     "UserPromptSubmit",
-		AdditionalContext: context,
-	}})
-}
-
-func correctionGuidance(streak int) string {
-	switch {
-	case streak <= 1:
-		return "Thanks for the correction. Adjust only the conflicting part, preserve compatible work, and confirm the target before the next external action."
-	case streak == 2:
-		return "Understood. This is another correction, so pause briefly and recheck the exact repository, target, and visible acceptance result before the next action. Preserve work that still fits."
-	default:
-		return "Please stop and realign before the next action. Corrections are repeating. Reconfirm the exact repository, target, authorization, and visible acceptance result; keep only work that still fits."
-	}
-}
-
-func correctionPrompt(prompt string) bool {
-	prompt = strings.ToLower(strings.TrimSpace(prompt))
-	if strings.HasPrefix(prompt, "no, stop ") ||
-		strings.HasPrefix(prompt, "actually, switch from ") ||
-		strings.HasPrefix(prompt, "actually switch from ") {
-		return true
-	}
-	if !correctionScopeRE.MatchString(prompt) {
-		return false
-	}
-	for _, scope := range []string{"repo", "repository", "target", "branch", "worktree", "workspace", "directory", "folder", "environment", "production", "staging", "deploy", "deployment", "file", "edit", "codebase", "correction"} {
-		if strings.HasPrefix(prompt, "wrong "+scope) {
-			return true
-		}
-	}
-	return strings.HasPrefix(prompt, "stop ") ||
-		strings.HasPrefix(prompt, "stop,") ||
-		strings.HasPrefix(prompt, "stop:") ||
-		strings.HasPrefix(prompt, "please stop ") ||
-		strings.Contains(prompt, "switch from ") ||
-		strings.Contains(prompt, "belongs in ") ||
-		strings.Contains(prompt, "meant to") && strings.Contains(prompt, "instead") ||
-		strings.HasPrefix(prompt, "use ") && (strings.Contains(prompt, " instead") || strings.Contains(prompt, ", not "))
 }
 
 func deliveryInvocations(command string) (shipping, deploying bool) {
@@ -510,7 +414,6 @@ func preToolUse(e event, w io.Writer) error {
 	isShipping, isDeploying := deliveryInvocations(command)
 	isProduction := isCommand && productionInvocation(command, isShipping, isDeploying)
 	isRead := readRE.MatchString(command)
-	isExternalMutation := isCommand && !isRead && externalMutationRE.MatchString(command)
 	isPassiveWait := passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
@@ -528,7 +431,6 @@ func preToolUse(e event, w io.Writer) error {
 	s.ToolCounts[e.ToolName]++
 	fp := fingerprint(e.ToolName, e.ToolInput)
 	s.Fingerprints[fp]++
-	repeats := s.Fingerprints[fp]
 	if isEdit {
 		s.Revision++
 		s.InspectionStreak = 0
@@ -571,102 +473,21 @@ func preToolUse(e event, w io.Writer) error {
 		s.LastProductionResultKnown = false
 		s.LastProductionSucceeded = false
 	}
-	resultMarker := ""
-	var updatedInput map[string]any
-	if e.ToolUseID != "" && canonicalBashTool(e.ToolName) && (isTest || isProduction) {
-		resultMarker = commandResultMarker(e)
-		updatedInput = markedCommandInput(e.ToolInput, command, resultMarker)
-		if updatedInput == nil {
-			resultMarker = ""
-		}
-	}
 	worktreeSnapshot, worktreeKnown := "", false
 	observeCommandWorktree := isCommand && !isRead && !isPassiveWait && !isBackgroundRecord && !isBackgroundComplete && !isTodoAdd && !isTodoDone && !isShipping && !isDeploying && !gitCommitRE.MatchString(command)
 	if s.Revision > 0 && (isEdit || observeCommandWorktree) {
 		worktreeSnapshot, worktreeKnown = gitWorktreeSnapshot(e.CWD)
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, ResultMarker: resultMarker, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls}
 	}
-	var messages []string
-	if goalChange == "start" {
-		messages = append(messages, "Goal mode started. Keep work tied to the objective; tool-call volume does not affect coaching. "+subagentGuidance+" "+sparkGuidance)
-	}
-	if repeats == 2 && isAgentSpawn(e.ToolName) {
-		messages = append(messages, "Duplicate worker check: parallel subagents are encouraged, but an identical assignment is redundant. Reuse that worker or give the new worker a distinct bounded task.")
-	}
-	if isEdit && s.LastTestResultKnown && !s.LastTestPassed {
-		messages = append(messages, "Failure containment: keep this edit tied to the observed failing check. Do not add a new mode, module, or sibling-repository change until the affected check passes.")
-	}
-	if isProduction || isExternalMutation {
-		messages = append(messages, "Target check (advisory, never a gate): match the latest request to the exact repository, environment, artifact or revision, and user-visible acceptance result. If they match, execute now; do not treat command success alone as goal success.")
-	}
-	if isPassiveWait {
-		if message := pacedSteer(s.PassiveWaitStreak, "A gentle note: passive waiting adds no evidence. Detach long work and record its cleanup and wake-up target.", "A friendly nudge: passive waiting is repeating. Please record the job once and continue another useful step.", "A clear steer: repeated passive waiting is stalling the goal. Stop polling; use the recorded wake-up path or stop cleanly."); message != "" {
-			messages = append(messages, message)
-		}
-	}
-	if isCommand && detachedTmuxRE.MatchString(command) && !isBackgroundRecord {
-		messages = append(messages, "Progress check: record this detached job, its cleanup command, and its tmux pane. Completion can then wake the agent without polling.")
-	}
-	if repeats > 1 {
-		message := pacedSteer(repeats-1,
-			fmt.Sprintf("A gentle note: %s received the same input again. Reuse the result if it is still current.", e.ToolName),
-			fmt.Sprintf("A friendly nudge: %s has repeated the same input 4 times. Please use the existing evidence. Next: %s", e.ToolName, nextAction(s)),
-			fmt.Sprintf("A clear steer: %s keeps receiving the same input. Stop repeating it unless state changed. Next: %s", e.ToolName, nextAction(s)))
-		if message != "" {
-			messages = append(messages, message)
-		}
-	}
-	if repeats == 4 {
+	if s.Fingerprints[fp] == 4 {
 		s.RepeatedWarnings++
-	}
-	if isTest && s.Tests == 6 {
-		messages = append(messages, "Six test runs. Avoid rerunning passing checks; continue any verification correctness requires.")
 	}
 	if err := save(p, s); err != nil {
 		return err
 	}
-	if sparkCall {
-		if err := recordSessionSparkCall(e.SessionID); err != nil {
-			return err
-		}
-	}
-	if len(messages) == 0 && updatedInput == nil {
-		return writeJSON(w, hookOutput{})
-	}
-	specific := &hookSpecificOutput{HookEventName: "PreToolUse", AdditionalContext: strings.Join(messages, " ")}
-	if updatedInput != nil {
-		specific.PermissionDecision = "allow"
-		specific.UpdatedInput = updatedInput
-	}
-	return writeJSON(w, hookOutput{HookSpecificOutput: specific})
-}
-
-func pacedSteer(occurrence int, gentle, firmer, clear string) string {
-	switch {
-	case occurrence == 1:
-		return gentle
-	case occurrence == 3:
-		return firmer
-	case occurrence >= 6 && (occurrence-6)%6 == 0:
-		return clear
-	default:
-		return ""
-	}
-}
-
-func nextAction(s state) string {
-	switch {
-	case s.LastTestResultKnown && !s.LastTestPassed:
-		return "use the failure output to diagnose one cause, make one complete correction, then rerun only the affected check and final contract"
-	case s.Revision == 0:
-		return "use the evidence already gathered to take the smallest step that advances the requested goal; edit only when evidence supports a change, otherwise answer or request the missing direction"
-	case s.VerifiedRevision == s.Revision && s.LastTestPassed:
-		return "the current revision is verified; run ship-it now, then report success unless a stated requirement remains unmet"
-	default:
-		return "finish the smallest current goal step, review it once, and run the narrow check plus required final contract"
-	}
+	return writeJSON(w, hookOutput{})
 }
 
 func postToolUse(e event, w io.Writer) error {
@@ -688,13 +509,14 @@ func postToolUse(e event, w io.Writer) error {
 	resultKnown, resultSucceeded := false, false
 	if ok {
 		delete(s.Pending, e.ToolUseID)
-		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse, pending.ResultMarker)
+		resultKnown, resultSucceeded = explicitResponseResult(e.ToolResponse)
+		commandPassed := resultKnown && resultSucceeded
 		if resultKnown && pending.Sequence >= s.LastCallResultSequence {
 			s.LastCallResultKnown = true
 			s.LastCallSucceeded = resultSucceeded
 			s.LastCallResultSequence = pending.Sequence
 		}
-		passed = responsePassed(e.ToolResponse)
+		passed = commandPassed
 		if pending.Test {
 			passed = resultKnown && resultSucceeded
 		}
@@ -758,10 +580,10 @@ func postToolUse(e event, w io.Writer) error {
 				}
 			}
 		}
-		if pending.BackgroundRecord && responsePassed(e.ToolResponse) {
+		if pending.BackgroundRecord && commandPassed {
 			s.BackgroundRecords++
 		}
-		if pending.BackgroundComplete && responsePassed(e.ToolResponse) && !bytes.Contains(e.ToolResponse, []byte("already completed; no wake sent")) {
+		if pending.BackgroundComplete && commandPassed && !bytes.Contains(e.ToolResponse, []byte("already completed; no wake sent")) {
 			s.BackgroundCompletions++
 		}
 		if pending.Production && resultKnown && resultSucceeded {
@@ -791,13 +613,13 @@ func postToolUse(e event, w io.Writer) error {
 		if pending.Deploying && resultKnown && resultSucceeded {
 			s.DeployCompletions++
 		}
-		if pending.TodoAdd && responsePassed(e.ToolResponse) {
+		if pending.TodoAdd && commandPassed {
 			s.TodosParked++
 		}
-		if pending.TodoDone && responsePassed(e.ToolResponse) {
+		if pending.TodoDone && commandPassed {
 			s.TodosCompleted++
 		}
-		if pending.GoalTransition != "" && responsePassed(e.ToolResponse) {
+		if pending.GoalTransition != "" && goalTransitionPassed(e.ToolResponse, pending.GoalTransition) {
 			if err := setSessionGoalActive(e.SessionID, pending.GoalTransition == "start"); err != nil {
 				return err
 			}
@@ -805,11 +627,6 @@ func postToolUse(e event, w io.Writer) error {
 	}
 	if err := save(p, s); err != nil {
 		return err
-	}
-	if ok && passed && (pending.Edit || pending.Test) {
-		if err := resetSessionSteer(e.SessionID); err != nil {
-			return err
-		}
 	}
 	return writeJSON(w, hookOutput{})
 }
@@ -833,23 +650,20 @@ func stop(e event, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	line := reportLine(s)
+	outcome := recordedOutcome(s)
+	if outcome == outcomeVerified {
+		outcome = "LOCAL CHECK PASSED"
+	}
+	message := "Tally: " + outcome + "."
 	if goalActive {
-		line += " | Goal state: ACTIVE"
+		message += " Goal remains active."
 	}
 	stewardship := ""
 	if s.BackgroundRecords > s.BackgroundCompletions {
-		stewardship = " Background work remains recorded. Let its completion command wake the agent; do not poll it."
+		stewardship = " Background work remains recorded."
 	}
 	closure := closingLoop(s, deployContract)
-	if !e.StopHookActive && !goalActive {
-		sparkReview, err := claimSparkRoutingReview(e.SessionID, s)
-		if err != nil {
-			return err
-		}
-		closure += sparkReview
-	}
-	message := line + ". " + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure
+	message += stewardship + closure
 	if requiredDeliveryPending(s) || goalActive || !finalPassed(s) {
 		return writeJSON(w, hookOutput{SystemMessage: message})
 	}
@@ -862,83 +676,62 @@ func stop(e event, w io.Writer) error {
 			return err
 		}
 	}
-	return writeJSON(w, hookOutput{SystemMessage: line + stewardship + closure})
+	return writeJSON(w, hookOutput{SystemMessage: message})
 }
 
 func closingLoop(s state, deployContract bool) string {
 	kind, attempted, known, succeeded, _ := latestDeliveryResult(s)
 	if attempted && known && !succeeded && kind == "deploy" {
-		return " Closing loop: deploy-it failed. Diagnose the recorded failure, fix the cause, reverify, and resume the authorized handoff. Do not retry blindly."
+		return " Delivery: deploy-it failed."
 	}
 	if attempted && known && !succeeded && kind == "ship" {
-		return " Closing loop: ship-it failed, and Git may already be shipped. Inspect Git and deployment state, fix the cause, reverify, and resume the authorized handoff. Do not retry blindly."
+		return " Delivery: ship-it failed; Git may already be shipped."
 	}
 	if attempted && !known && kind == "deploy" {
-		return " Closing loop: deploy-it returned no result. Inspect deployment state before deciding whether to retry."
+		return " Delivery: deploy-it returned no result."
 	}
 	if attempted && !known && kind == "ship" {
-		return " Closing loop: ship-it returned no result, and Git may already be shipped. Inspect repository and deployment state before deciding whether to retry."
+		return " Delivery: ship-it returned no result; Git may already be shipped."
 	}
 	if attempted && known && !succeeded {
-		return " Closing loop: delivery failed. Inspect the recorded failure, fix the cause, reverify, and resume the authorized handoff."
+		return " Delivery failed."
 	}
 	if attempted && !known {
-		return " Closing loop: delivery returned no result. Inspect external state before deciding whether to retry."
+		return " Delivery returned no result."
 	}
 	if s.Revision == 0 {
 		return ""
 	}
 	if !currentEditReady(s) {
-		return " Closing loop: confirm that the edit completed successfully before shipping."
+		return " The latest edit result is not confirmed."
 	}
 	if !finalPassed(s) {
-		return " Closing loop: verify the current revision before shipping."
+		return " Current changes are not verified."
 	}
 	if recoveredCurrentDeployment(s) {
-		return " Closing loop: shipping and deployment completed. Confirm the visible result."
+		return " Delivery: shipping and deployment recorded."
 	}
 	if shippedCurrentRevision(s) {
 		if deployContract {
-			return " Closing loop: shipping completed. Confirm deployment and the visible result. Use matching user authorization; only the user can authorize new trust."
+			return " Delivery: shipping recorded; deployment state is not recorded."
 		}
-		return " Closing loop: shipping completed without a `.deploy-it.json` contract. If production was requested, state the target, revision, and visible check. " + acceptanceGuidance
+		return " Delivery: shipping recorded; no tracked deployment contract."
 	}
-	if deployContract {
-		return " Closing loop: verified changes are ready. Run ship-it; it will use the tracked deployment contract. Confirm the visible result."
-	}
-	return " Closing loop: verified changes are ready. Run ship-it. If production was requested without a deployment contract, state the target, revision, and visible check. " + acceptanceGuidance
-}
-
-func outcomeAdvisory(outcome string) string {
-	switch outcome {
-	case outcomeNoWork:
-		return "This hook observed no tool activity and cannot assess task completion."
-	case outcomeActivity:
-		return "This hook observed activity but cannot infer task completion or user-visible acceptance."
-	case outcomeFailed:
-		return "A recorded action or check failed; use that evidence to fix the cause and continue to the requested acceptance result before claiming completion."
-	default:
-		return "Recorded verification passed; confirm any required user-visible acceptance."
-	}
-}
-
-func isAgentSpawn(tool string) bool {
-	tool = strings.ToLower(tool)
-	return strings.Contains(tool, "spawn_agent") || strings.Contains(tool, "task") && strings.Contains(tool, "agent")
+	return " Delivery: not recorded for the verified revision."
 }
 
 func reportLine(s state) string {
 	mode := ""
-	coaching := "advisory"
+	meaning := "diagnostic"
 	if s.GoalScoped {
 		mode = " | Run mode: /goal (high tool-call volume expected)"
-		coaching = "advisory; tool-call volume not scored"
+		meaning = "diagnostic; tool-call volume not scored"
 	}
-	score := fmt.Sprintf("%d/100 (%s)", numericScore(s), coaching)
+	score := fmt.Sprintf("%d/100 (%s)", numericScore(s), meaning)
 	if !hasRecordedActivity(s) {
 		score = "N/A (no observed work)"
 	}
-	return fmt.Sprintf("Recorded outcome: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %d unknown, %s total, %s redundant) | Delivery actions: %d completed (%d shipped, %d deployed) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Coaching signals: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, score)
+	return fmt.Sprintf("Recorded outcome: %s%s | Tool calls: %d (%d Spark; %s weighted) | Test runs: %d (%d pass, %d fail, %d unknown, %s total, %s redundant) | Delivery actions: %d completed (%d shipped, %d deployed) | Background jobs: %d recorded, %d completed; passive waits: %d | Deferred work: %d parked, %d completed | Activity score: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, s.TodosParked, s.TodosCompleted, score)
 }
 
 func numericScore(s state) int {
@@ -1287,58 +1080,7 @@ func passiveWait(e event, command string) bool {
 	return passiveWaitRE.MatchString(command)
 }
 
-func responsePassed(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
-		return false
-	}
-	return !containsFailure(v)
-}
-
-func commandResultMarker(e event) string {
-	sum := sha256.Sum256([]byte(e.SessionID + "\x00" + e.TurnID + "\x00" + e.ToolUseID))
-	return hex.EncodeToString(sum[:12])
-}
-
-func markedCommandInput(raw json.RawMessage, command, marker string) map[string]any {
-	if strings.TrimSpace(command) == "" || marker == "" {
-		return nil
-	}
-	var input map[string]any
-	if json.Unmarshal(raw, &input) != nil || input == nil {
-		return nil
-	}
-	if _, ok := input["command"].(string); !ok {
-		return nil
-	}
-	input["command"] = fmt.Sprintf("(\ntrap 'one_shot_tally_exit=$?; printf \"\\n__ONE_SHOT_TALLY_RESULT_%s__:%%d\\n\" \"$one_shot_tally_exit\"; exit \"$one_shot_tally_exit\"' 0\n%s\n)", marker, command)
-	return input
-}
-
-func canonicalBashTool(tool string) bool {
-	return strings.EqualFold(strings.TrimSpace(tool), "Bash")
-}
-
-func markedResponseResult(output, marker string) (bool, bool) {
-	if marker == "" {
-		return false, false
-	}
-	prefix := "__ONE_SHOT_TALLY_RESULT_" + marker + "__:"
-	index := strings.LastIndex(output, prefix)
-	if index < 0 {
-		return false, false
-	}
-	code, err := strconv.Atoi(strings.TrimSpace(output[index+len(prefix):]))
-	if err != nil {
-		return false, false
-	}
-	return true, code == 0
-}
-
-func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool) {
+func explicitResponseResult(raw json.RawMessage) (bool, bool) {
 	if len(raw) == 0 {
 		return false, false
 	}
@@ -1346,9 +1088,9 @@ func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool)
 	if json.Unmarshal(raw, &value) != nil {
 		return false, false
 	}
-	marker := ""
-	if len(markers) > 0 {
-		marker = markers[0]
+	envelope, ok := value.(map[string]any)
+	if !ok {
+		return false, false
 	}
 	known, failed := false, false
 	var inspect func(map[string]any, bool)
@@ -1358,20 +1100,6 @@ func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool)
 		case []any:
 			for _, child := range item {
 				inspectValue(child, false)
-			}
-		case string:
-			text := strings.TrimSpace(item)
-			if marked, succeeded := markedResponseResult(text, marker); marked {
-				known = true
-				failed = failed || !succeeded
-				return
-			}
-			if text == "" || (text[0] != '{' && text[0] != '[') {
-				return
-			}
-			var decoded any
-			if json.Unmarshal([]byte(text), &decoded) == nil {
-				inspectValue(decoded, false)
 			}
 		case map[string]any:
 			inspect(item, root)
@@ -1403,12 +1131,12 @@ func explicitResponseResult(raw json.RawMessage, markers ...string) (bool, bool)
 						known, failed = true, true
 					}
 				}
-			case "result", "response", "metadata", "tool_response", "structuredcontent", "structured_content", "content", "output", "text":
+			case "result", "response", "metadata", "tool_response", "structuredcontent", "structured_content":
 				inspectValue(child, false)
 			}
 		}
 	}
-	inspectValue(value, true)
+	inspect(envelope, true)
 	return known, known && !failed
 }
 
@@ -1467,36 +1195,45 @@ func formatMillis(milliseconds int64) string {
 	return (time.Duration(milliseconds) * time.Millisecond).Round(time.Second).String()
 }
 
-func containsFailure(v any) bool {
-	switch x := v.(type) {
+func goalTransitionPassed(raw json.RawMessage, transition string) bool {
+	if known, passed := explicitResponseResult(raw); known && !passed {
+		return false
+	}
+	var value any
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	status, ok := nestedGoalStatus(value)
+	if !ok {
+		return false
+	}
+	if transition == "start" {
+		return status == "active"
+	}
+	return status == "complete" || status == "blocked"
+}
+
+func nestedGoalStatus(value any) (string, bool) {
+	switch item := value.(type) {
 	case map[string]any:
-		for k, value := range x {
-			switch strings.ToLower(k) {
-			case "exit_code", "exitcode", "status_code", "statuscode":
-				if n, ok := value.(float64); ok && n != 0 {
-					return true
-				}
-			case "success", "ok":
-				if b, ok := value.(bool); ok && !b {
-					return true
-				}
-			case "error", "stderr":
-				if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
-					return true
-				}
+		if goal, ok := item["goal"].(map[string]any); ok {
+			if status, ok := goal["status"].(string); ok {
+				return strings.ToLower(strings.TrimSpace(status)), true
 			}
-			if containsFailure(value) {
-				return true
+		}
+		for _, child := range item {
+			if status, ok := nestedGoalStatus(child); ok {
+				return status, true
 			}
 		}
 	case []any:
-		for _, value := range x {
-			if containsFailure(value) {
-				return true
+		for _, child := range item {
+			if status, ok := nestedGoalStatus(child); ok {
+				return status, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
 func loadState(path string, sessionID, turnID string) (state, error) {
@@ -1666,117 +1403,6 @@ func statePath(e event) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(e.SessionID + ":" + e.TurnID))
 	return filepath.Join(dir, hex.EncodeToString(sum[:12])+".json"), nil
-}
-
-func sessionSteerPath(sessionID string) (string, error) {
-	dir, err := stateDir()
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(sessionID))
-	return filepath.Join(dir, "steer-"+hex.EncodeToString(sum[:12])+".state"), nil
-}
-
-func loadSessionSteer(path string) (sessionSteer, error) {
-	var steer sessionSteer
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return steer, nil
-	}
-	if err != nil {
-		return steer, err
-	}
-	if err := json.Unmarshal(b, &steer); err != nil {
-		if quarantineErr := quarantineState(path); quarantineErr != nil {
-			return sessionSteer{}, quarantineErr
-		}
-		return sessionSteer{}, nil
-	}
-	return steer, nil
-}
-
-func saveSessionSteer(path string, steer sessionSteer) error {
-	b, err := json.Marshal(steer)
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".steer-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
-}
-
-func resetSessionSteer(sessionID string) error {
-	p, err := sessionSteerPath(sessionID)
-	if err != nil {
-		return err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil || steer.CorrectionStreak == 0 {
-		return err
-	}
-	steer.CorrectionStreak = 0
-	return saveSessionSteer(p, steer)
-}
-
-func recordSessionSparkCall(sessionID string) error {
-	p, err := sessionSteerPath(sessionID)
-	if err != nil {
-		return err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil {
-		return err
-	}
-	steer.SparkCalls++
-	return saveSessionSteer(p, steer)
-}
-
-func claimSparkRoutingReview(sessionID string, s state) (string, error) {
-	if !finalPassed(s) || s.SuccessfulEdits < 2 {
-		return "", nil
-	}
-	p, err := sessionSteerPath(sessionID)
-	if err != nil {
-		return "", err
-	}
-	unlock, err := acquireStateLock(p)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = unlock() }()
-	steer, err := loadSessionSteer(p)
-	if err != nil {
-		return "", err
-	}
-	if steer.SparkCalls > 0 || steer.SparkReviewShown {
-		return "", nil
-	}
-	steer.SparkReviewShown = true
-	if err := saveSessionSteer(p, steer); err != nil {
-		return "", err
-	}
-	return " Spark review: none used this run. Before the next implementation, check whether an exact, low-risk, independent edit with disjoint ownership exists for spark_worker; do not invent one.", nil
 }
 
 func goalMarkerPath(sessionID string) (string, error) {
@@ -2137,7 +1763,7 @@ func completeBackground(args []string, w io.Writer) error {
 		return err
 	}
 	if wake && job.TmuxTarget != "" {
-		message := fmt.Sprintf("Background job %s completed. Inspect its result only if it belongs to the active task.", job.ID)
+		message := fmt.Sprintf("Background job %s completed.", job.ID)
 		if err := exec.Command("tmux", "send-keys", "-l", "-t", job.TmuxTarget, message).Run(); err != nil {
 			return fmt.Errorf("job recorded complete, but its one wake attempt failed and will not be retried automatically: %w", err)
 		}
@@ -2401,7 +2027,7 @@ func printLatestTo(w io.Writer, asJSON bool) error {
 	}
 	fmt.Fprintln(w, reportLine(s))
 	if life.Runs > 0 {
-		fmt.Fprintf(w, "Lifetime: Verified revisions since 1.12: %d | Historical verified/successful runs: %d/%d | Coaching average: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
+		fmt.Fprintf(w, "Lifetime: Verified revisions since 1.12: %d | Historical verified/successful runs: %d/%d | Average activity score: %.1f/100 | Tests: %d (%d failed, %s total) | Tool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
 	}
 	return nil
 }

@@ -1,6 +1,6 @@
 ---
 name: one-shot-tally
-description: Use one-shot-tally for concise coaching, goal recovery, background jobs, and durable TODOs.
+description: Use one-shot-tally for concise work status, goal recovery, background jobs, and durable TODOs.
 ---
 
 # One-Shot Tally
@@ -28,16 +28,16 @@ one-shot-tally help|-h|--help
 
 ## Behavior
 
-The hook records activity, checks, delivery, background work, and TODOs. Its coaching is advisory. It never decides whether the user's task is complete and never blocks `Stop`, Git, `ship-it`, or `deploy-it`.
+The hook records activity, checks, delivery, background work, and TODOs. Its status is advisory. It never decides whether the user's task is complete and never blocks `Stop`, Git, `ship-it`, or `deploy-it`.
 
 - `NO OBSERVED WORK`: no tool activity.
 - `ACTIVITY OBSERVED`: activity without verified current edits.
 - `FAILED`: an explicit unresolved failure.
-- `VERIFIED`: the current edit completed and a later standalone check passed.
+- `VERIFIED`: the current edit completed and a later standalone local check passed. Stop reports this as `LOCAL CHECK PASSED`.
 
-For Bash checks and delivery commands, `PreToolUse` adds a private result marker. `PostToolUse` accepts that marker or a structured exit result. Plain output text is not proof.
+`PreToolUse` never changes or authorizes a command. `PostToolUse` accepts explicit structured results, such as an exit code. Plain output text is not proof.
 
-Keep ordinary prompts quiet. Give short correction or repetition guidance only when detected. Reset its cadence after a successful edit or check. Report unresolved delivery without retrying or blocking.
+`SessionStart`, `UserPromptSubmit`, and ordinary `PreToolUse` events add no instructions. At Stop, report only the outcome and delivery state. Detailed metrics stay in `status` and `grade`.
 
 Use `background complete ID --wake` only from the detached job. Manual completion omits `--wake`.
 

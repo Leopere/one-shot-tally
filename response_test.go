@@ -28,9 +28,12 @@ func TestExplicitResponseResult(t *testing.T) {
 		{name: "malformed_unknown", raw: `{"result":`, want: struct{ known, pass bool }{false, false}},
 		{name: "output_text_only_unknown", raw: `{"output":"FAIL: expected output mismatch"}`, want: struct{ known, pass bool }{false, false}},
 		{name: "action_fail_json_text_unknown", raw: `{"output":"{\"Action\":\"fail\",\"Package\":\"x\"}"}`, want: struct{ known, pass bool }{false, false}},
-		{name: "serialized_command_result_passes", raw: `{"output":[{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]}`, want: struct{ known, pass bool }{true, true}},
-		{name: "serialized_command_result_fails", raw: `{"output":[{"type":"input_text","text":"{\"exit_code\":2,\"output\":\"bad\"}"}]}`, want: struct{ known, pass bool }{true, false}},
-		{name: "top_level_content_blocks_pass", raw: `[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]`, want: struct{ known, pass bool }{true, true}},
+		{name: "serialized_command_result_unknown", raw: `{"output":[{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]}`, want: struct{ known, pass bool }{false, false}},
+		{name: "serialized_failure_unknown", raw: `{"output":[{"type":"input_text","text":"{\"exit_code\":2,\"output\":\"bad\"}"}]}`, want: struct{ known, pass bool }{false, false}},
+		{name: "top_level_content_blocks_unknown", raw: `[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]`, want: struct{ known, pass bool }{false, false}},
+		{name: "top_level_array_exit_unknown", raw: `[{"exit_code":0}]`, want: struct{ known, pass bool }{false, false}},
+		{name: "structured_output_payload_unknown", raw: `{"output":{"exit_code":0}}`, want: struct{ known, pass bool }{false, false}},
+		{name: "structured_content_payload_unknown", raw: `{"content":[{"exit_code":0}]}`, want: struct{ known, pass bool }{false, false}},
 		{name: "human_tool_output_unknown", raw: `{"output":[{"type":"input_text","text":"Script completed with passing tests"}]}`, want: struct{ known, pass bool }{false, false}},
 		{name: "transport_success_with_failure_text_unknown", raw: `{"success":true,"output":"FAILED tests/test_api.py"}`, want: struct{ known, pass bool }{false, false}},
 		{name: "zero_exit_with_stderr_warning_passes", raw: `{"exit_code":0,"stderr":"warning"}`, want: struct{ known, pass bool }{true, true}},
@@ -43,6 +46,35 @@ func TestExplicitResponseResult(t *testing.T) {
 			known, passed := explicitResponseResult(json.RawMessage(tt.raw))
 			if known != tt.want.known || passed != tt.want.pass {
 				t.Fatalf("explicitResponseResult(%q) = (%v, %v), want (%v, %v)", tt.name, known, passed, tt.want.known, tt.want.pass)
+			}
+		})
+	}
+}
+
+func TestGoalTransitionPassedRequiresMatchingGoalStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		transition string
+		want       bool
+	}{
+		{name: "start_active", raw: `{"goal":{"status":"active"}}`, transition: "start", want: true},
+		{name: "finish_complete", raw: `{"structuredContent":{"goal":{"status":"complete"}}}`, transition: "finish", want: true},
+		{name: "finish_blocked", raw: `{"goal":{"status":"blocked"}}`, transition: "finish", want: true},
+		{name: "wrong_status", raw: `{"goal":{"status":"complete"}}`, transition: "start", want: false},
+		{name: "transport_success_only", raw: `{"success":true}`, transition: "start", want: false},
+		{name: "unscoped_status", raw: `{"status":"active"}`, transition: "start", want: false},
+		{name: "explicit_error_with_status", raw: `{"isError":true,"goal":{"status":"active"}}`, transition: "start", want: false},
+		{name: "failed_transport_with_status", raw: `{"success":false,"goal":{"status":"complete"}}`, transition: "finish", want: false},
+		{name: "error_text_with_status", raw: `{"error":"write failed","goal":{"status":"blocked"}}`, transition: "finish", want: false},
+		{name: "empty_object", raw: `{}`, transition: "start", want: false},
+		{name: "malformed", raw: `{"goal":`, transition: "start", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := goalTransitionPassed(json.RawMessage(test.raw), test.transition); got != test.want {
+				t.Fatalf("goalTransitionPassed() = %v, want %v", got, test.want)
 			}
 		})
 	}
@@ -71,7 +103,7 @@ func TestUnknownEditResponseCannotVerifyOrFail(t *testing.T) {
 		})
 		out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": turn, "hook_event_name": "Stop"})
 		text := string(mustJSON(out))
-		if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") || strings.Contains(text, "Recorded outcome: FAILED") {
+		if !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") || strings.Contains(text, "Tally: FAILED") {
 			t.Fatalf("unknown edit response %d was guessed: %#v", index, out)
 		}
 	}
@@ -110,7 +142,7 @@ func TestSuccessfulNoOpEditDoesNotCreateVerifiedRevision(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "no-op-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("successful no-op edit was treated as a changed revision: %#v", out)
 	}
 }
@@ -138,7 +170,7 @@ func TestObservedWorktreeChangeCanConfirmOpaqueEditResponse(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "opaque-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("observed edit plus explicit passing test was not verified: %#v", out)
 	}
 }
@@ -187,7 +219,7 @@ func TestUnknownTestResultNeverVerifiesEdit(t *testing.T) {
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "unknown-test", "hook_event_name": "Stop"})
 	text := string(mustJSON(out))
-	if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || !strings.Contains(text, "1 unknown") || !strings.Contains(text, "Coaching signals: 100/100 (advisory)") || strings.Contains(text, "ship-ready") {
+	if !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") || strings.Contains(text, "ship-ready") {
 		t.Fatalf("unknown test result verified edit: %#v", out)
 	}
 }
@@ -203,7 +235,7 @@ func TestKnownFailedCommandReportsFailed(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "command", "tool_response": map[string]any{"exit_code": 1},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failed-command", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: FAILED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: FAILED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("failed command outcome: %#v", out)
 	}
 }
@@ -227,7 +259,7 @@ func TestShellMutationIsActivityEvenAfterPassingCheck(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "shell-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("untracked shell mutation was verified: %#v", out)
 	}
 }
@@ -278,7 +310,7 @@ func TestMixedEditBypassDoesNotRemainVerifiedAfterShellMutation(t *testing.T) {
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "mixed-edit", "hook_event_name": "Stop"})
 	text := string(mustJSON(out))
-	if !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("mixed edit path should not stay VERIFIED: %#v", out)
 	}
 	hook(t, dir, map[string]any{
@@ -290,7 +322,7 @@ func TestMixedEditBypassDoesNotRemainVerifiedAfterShellMutation(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "retest", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out = hook(t, dir, map[string]any{"session_id": "s", "turn_id": "mixed-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("observed shell mutation could not be verified by a later test: %#v", out)
 	}
 }
@@ -334,7 +366,7 @@ func TestFailedShellMutationCannotBeRescuedByLaterPassingTest(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "later-test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "failed-shell-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: FAILED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: FAILED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("failed shell mutation was hidden by a later test: %#v", out)
 	}
 }
@@ -360,7 +392,7 @@ func TestShellChainedTestResultIsNotAuthoritative(t *testing.T) {
 				"tool_name": "Bash", "tool_use_id": "test", "tool_response": map[string]any{"exit_code": 0},
 			})
 			out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": command, "hook_event_name": "Stop"})
-			if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+			if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 				t.Fatalf("ambiguous shell chain verified an edit: %#v", out)
 			}
 			if state := loadTestState(t, dir); state.Tests != 0 {
@@ -390,7 +422,7 @@ func TestTestStartedBeforeEditCompletionCannotVerify(t *testing.T) {
 		"tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("test that overlapped an incomplete edit verified it: %#v", out)
 	}
 }
@@ -466,7 +498,7 @@ func TestStaleEditResultCannotOverrideNewerObservedEdit(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "stale-edit", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: VERIFIED") || strings.Contains(text, "Recorded outcome: FAILED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: LOCAL CHECK PASSED") || strings.Contains(text, "Tally: FAILED") {
 		t.Fatalf("stale edit completion overrode newer edit: %#v", out)
 	}
 }
@@ -508,7 +540,7 @@ func TestKnownPreTestSnapshotRequiresKnownPostSnapshot(t *testing.T) {
 		"tool_name": "Bash", "tool_use_id": "test", "cwd": repo, "tool_response": map[string]any{"exit_code": 0},
 	})
 	out := hook(t, dir, map[string]any{"session_id": "s", "turn_id": "snapshot-loss", "hook_event_name": "Stop"})
-	if text := string(mustJSON(out)); !strings.Contains(text, "Recorded outcome: ACTIVITY OBSERVED") || strings.Contains(text, "Recorded outcome: VERIFIED") {
+	if text := string(mustJSON(out)); !strings.Contains(text, "Tally: ACTIVITY OBSERVED") || strings.Contains(text, "Tally: LOCAL CHECK PASSED") {
 		t.Fatalf("missing post-test snapshot was treated as unchanged: %#v", out)
 	}
 }
