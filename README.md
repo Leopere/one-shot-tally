@@ -1,180 +1,31 @@
 # one-shot-tally
 
-`one-shot-tally` is a coach and notebook for Codex-compatible agents. It records
-observable work such as tool use, verification, delivery actions, background
-jobs, and deferred TODOs. It then returns short coaching messages while the
-agent works.
+`one-shot-tally` records observable Codex work and returns short, advisory coaching. It tracks tool use, checks, delivery, background jobs, and deferred TODOs.
 
-The record helps you study what an agent actually did instead of relying on an
-impression of the run. Use it to find repeated calls, passive waiting,
-unnecessary test reruns, unfinished background work, and missing verification.
-Recorded verification remains more important than every coaching signal. The
-hook does not decide whether the user's goal is complete.
+The record helps identify repeated calls, passive waiting, redundant tests, unfinished background work, and missing verification. It does not understand product intent, prove service health, decide whether a goal is complete, or block an agent from stopping.
 
-This project is an example policy, not a universal grading standard. Different
-repositories, teams, and agents need different signals. Fork the repository,
-maintain your own version, and tune its messages, thresholds, weights, and
-recognized commands as your evidence changes. Keep the tests with your policy
-so a scoring change does not silently change agent behavior.
+Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved. See [LICENSE](LICENSE).
 
-Copyright © 2026 [ColinKnapp.com](https://colinknapp.com). All rights reserved. This project is proprietary; see [LICENSE](LICENSE).
+## Outcomes
 
-When you share or adapt this work, credit ColinKnapp.com, link the license, and state whether you changed the work.
+- `NO OBSERVED WORK`: no tool activity was recorded.
+- `ACTIVITY OBSERVED`: activity occurred without verified current edits.
+- `FAILED`: a recorded action or check has an explicit unresolved failure.
+- `VERIFIED`: the current edit completed and a later standalone check passed without changing the Git-visible worktree.
 
-## What it does
+The coaching score is advisory. It does not change the recorded outcome.
 
-- Records mechanical hook events and local outcome evidence.
-- Distinguishes verified edited revisions from observed activity and advisory coaching signals.
-- Keeps durable notes for deferred work and long-running background jobs.
-- Sends explicitly authorized credential text to `colin.knapp@boompay.ca` as signed, fixed-recipient OpenPGP/MIME after an isolated GnuPG WKD lookup, with idempotent metadata-only receipts.
-- Discounts bounded Spark subagent work without discounting verification.
-- Adds concise context that can steer an active agent back toward the goal.
-- Starts correction steers politely, increases directness after repeated corrections, and cools down after progress.
-- Directs the primary agent to run `ship-it` immediately after verified work and to apply matching standing production authorization without asking again. If required delivery is still unresolved, `Stop` returns `decision:block` once with the existing delivery steer. On reentry (`stop_hook_active: true`), the hook must retain unresolved delivery evidence and resume guidance in `systemMessage` and must not return `decision:block` again. The hook process emits guidance and records delivery outcomes; it does not spawn or block delivery commands itself.
-- Makes `status` prefer the latest session with recorded work over a newer empty turn.
-- Exposes human-readable and JSON reports for later comparison.
+## Hook behavior
 
-It does not understand product intent, prove service health, or replace human
-review. A high coaching score does not prove that the requested goal succeeded.
-A low coaching score does not invalidate recorded verification.
+- `SessionStart` adds one short reminder to finish the current request and verify changes.
+- `UserPromptSubmit` is quiet unless it detects a correction.
+- `PreToolUse` records calls and adds a private result marker to recognized Bash checks and delivery commands.
+- `PostToolUse` records structured results or a matching private marker. Plain output text is not proof of success.
+- `Stop` reports the current outcome and any unfinished delivery. It never returns `decision:block`.
 
-## How to use the record
+Correction and repetition messages use a widening cadence and reset after a successful edit or check. Goal mode does not score tool-call volume. The hook does not start `ship-it`, `deploy-it`, or any other delivery command.
 
-Start with the recorded outcome. Then review the coaching signals to explain
-the observed work. Look for patterns across several runs before you
-change a rule. Use `status --json` and `grade --json` when you want to compare
-runs with your own scripts. Their `outcome` field contains the four-state label,
-and `verified` is true only for `VERIFIED`; there is no ambiguous `success` alias.
-
-Tune one behavior at a time. Update its tests, install the new binary, and watch
-the next runs for both improvement and unintended avoidance. Coaching should
-encourage useful work without rewarding inactivity, scope growth, or work done
-only to improve a score.
-
-## Tuning lessons from 1.10 and 1.11
-
-| Version line | What changed | Current recommendation |
-| --- | --- | --- |
-| 1.10.4–1.10.8 | Scope correction became less destructive while generic per-prompt guidance was tested and then reconsidered. | Preserve compatible work and revise only the conflict. |
-| 1.11.0 | Ordinary prompts became quiet; repeated-call reminders gained graduated/reset cadence; correction tone became session-stateful; and ship/deploy outcomes became separate. | Emit event-specific guidance, widen reminder intervals, reset after proven progress, and require current evidence before recommending delivery. |
-| 1.11.1 | Spark routing became proactive and session-aware. | Look for safe, independent Spark work, but never invent it or treat usage as a quota. |
-| 1.11.2 | Empty turns stopped counting as successful work. | Require at least one direct recorded attempt to learn or act; prompts, coordination, passive waits, and bookkeeping alone aren't progress. |
-| 1.11.3 | Known wrapped test failures stopped counting as passes. | Inspect structured results and runner failure summaries when a tool wrapper doesn't expose the command's exit code directly. |
-| 1.12.0 | Reports stopped inferring goal success from tool names, shell text, and test output. | Report observed activity honestly; verify only an edited revision with an ordered, explicit passing result. |
-| 1.13.0 | A successful Git push could end a production-requested task when no deployment contract existed. | Run `ship-it` by default; resolve a missing deployment procedure from evidence and require the user's explicit acceptance before trust or deployment. |
-| 1.13.1 | Unknown test telemetry forced the same 25 score as an edit with no test. | Keep the revision unverified and not ship-ready, but do not punish an agent for telemetry availability it cannot control. |
-| 1.13.2 | Agents repeatedly requested a magic approval phrase after the user had already authorized a presented production procedure. | Treat clear instructions to deploy, proceed, continue, or keep going until the visible result as explicit acceptance, then execute without asking again. |
-| 1.13.3 | Agents treated `ship-it` as a recommendation, and a newer empty turn could hide the latest working session in `status`. | Run `ship-it` directly after bounded verification without separate shipping permission, and report the latest session with recorded work. |
-| 1.13.4 | Agents treated target confirmation as a reason to ask for shipping permission even when the user had issued a standing production instruction. | State the evidence-backed target, apply matching standing authorization until revoked, and ship without a per-revision permission prompt. |
-| 1.13.5 | Agents sometimes stalled on or retried GitHub-hosted checks when local runner health was uncertain. | Never rely on GitHub Actions public runners. Use the self-hosted local runner and labels documented in `~/dev/gh-runner`. If that runner stalls or is insufficient, diagnose and repair it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), then test it. GitHub-hosted runner labels are a shipping defect; hard enforcement remains in `ship-it`. |
-| 1.13.6 | Agents treated a failed or unknown delivery result as a reason to end the task, while Codex Bash PostToolUse omitted the structured exit code needed to distinguish success from failure. | Preserve delivery failures and resume the authorized handoff after correction. Wrap verification and delivery commands in PreToolUse, preserve their real exit status in a per-call marker, and accept a matching marker or trusted structured result in PostToolUse. |
-| 1.13.7 | Stop reentry handling could keep blocking repeatedly when delivery was unresolved. | Keep unresolved delivery in a single-stop continuation: `Stop` can block once with delivery steer, then retain unresolved evidence and guidance on reentry while never blocking again. |
-| 1.14.0 | Explicit credential delivery lacked a narrow compiled path and could stall on generic safety concerns. | Read plaintext only from stdin, sign and encrypt with pinned keys, submit through the restricted fixed-recipient transport, and record metadata without recording plaintext. |
-| 1.15.0 | The credential path used an embedded recipient certificate instead of the recipient's current DNS record. | Fetch the RFC 7929 OPENPGPKEY record through DNS-over-HTTPS, require a DNSSEC Secure answer and the pinned fingerprint, and give the fetched key directly to GnuPG. |
-| 1.16.0 | The DNS record and older local certificate did not match the key returned by a clean GnuPG WKD lookup, so SnappyMail could not decrypt test messages. | Let GnuPG perform an isolated `clear,wkd` lookup and cache only a minimal certificate with a valid exact-recipient UID and encryption key. Exact recipient fingerprints are debugging evidence, not production policy. |
-
-## Encrypted credential delivery
-
-Check the recipient key without reading or sending a credential:
-
-```sh
-one-shot-tally credential key-check
-```
-
-The check runs the trusted GnuPG binary with a new private home directory and
-`--auto-key-locate clear,wkd --locate-external-key colin.knapp@boompay.ca`.
-It exports the WKD result for the exact recipient address, then requires a valid
-self-certified recipient UID and a valid encryption-capable key. It reports the
-observed fingerprints for diagnostics but does not pin them in production. A
-missing, malformed, expired, or mismatched result stops the operation. There is
-no embedded-key, recipient-keyring, DNS-record, keyserver, plaintext, or
-`gmail-cli` fallback.
-
-Successful lookups are cached for one hour in the private one-shot-tally state
-directory. Failed lookups are remembered for five minutes to avoid repeated
-network disclosure of recipient intent. `credential key-check` always performs
-a live lookup and replaces the cached result.
-
-Use one explicit operation ID and one or more non-secret account references:
-
-```sh
-one-shot-tally credential send \
-  --operation-id 123e4567-e89b-12d3-a456-426614174000 \
-  --account boompay-admin
-```
-
-Enter or pipe the credential text through stdin. Do not put it in an argument or
-environment variable. The command uses the same validated WKD key, passes its
-minimal certificate to GnuPG through `--recipient-file`, and encrypts to subkey
-`5FE016062B506A77`. The local GnuPG agent signs with subkey
-`33EA65A9C078126556C150E1EA43219BE7B419F1`. The result is the combined
-signed-and-encrypted form allowed by RFC 3156.
-
-The command submits only the PGP/MIME ciphertext through a dedicated SSH key to
-Mail-in-a-Box at `box.p.nixc.us`. The server-side forced command can send only
-from `colin@nixc.us` to `colin.knapp@boompay.ca`. The client ignores user SSH
-configuration and disables agents and shared connections so the dedicated
-key's restrictions are always evaluated.
-
-Local receipts record the operation ID, account references, destination,
-ciphertext hash and size, signing and encryption fingerprints, and outcome.
-They never record the credential text or a plaintext hash. Reusing an operation ID never submits a
-second message. Exit status 3 means the delivery outcome is unknown and must be
-resolved from the receipt or mailbox before any new operation is created.
-
-- Keep compatible work and only replace what conflicts or is explicitly cancelled.
-- Ordinary `UserPromptSubmit` events are quiet; the hook sends prompt guidance only when it detects a correction.
-- Correction tone starts polite, becomes firmer after repeated corrections, and resets after a successful edit or passing test.
-- Repeated-call cadence runs on calls 2, 4, 7, 13, and continues onward; a successful edit or passing test resets cadence.
-- `NO OBSERVED WORK` means the hook received no tool calls.
-- `ACTIVITY OBSERVED` means tool activity occurred, but the hook cannot infer completion.
-- `FAILED` means a recorded action, edit, or check has an explicit unresolved failure result.
-- `VERIFIED` requires a completed current edit and an explicit passing standalone test that started after that edit. Ship-ready uses the same evidence.
-- Test output text is not parsed for pass or failure phrases. A wrapper that hides the command result produces an unknown test result, never verification. Unknown test telemetry never verifies a revision or permits ship-ready status, and by itself no longer forces the coaching score to 25; explicit failures and edits with no test remain penalized.
-- Shell chains such as `go test ./... || true` are not authoritative tests because their final exit code can hide the runner result.
-- Recognized edit tools establish revisions directly. After that, Git-visible worktree snapshots also invalidate verification when a shell command changes tracked or untracked content.
-- `ship-it` is the required finalizer for every changed Git work cycle. After bounded verification, the primary agent runs it immediately without merely recommending it, asking for separate commit, push, or shipping permission, or pausing for acknowledgement. A verified revision is not complete without required delivery. The deployment handoff requires an explicit, tracked `.deploy-it.json` contract; trust and handoff enforcement stay in `ship-it`/`deploy-it`.
-- Do not use GitHub-hosted/public runners for delivery steps that depend on CI behavior. Verify and use the self-hosted local runner from `~/dev/gh-runner` and its documented labels. If the local runner is unavailable or insufficient, diagnose and fix it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), test it, then resume delivery. GitHub-hosted runner labels are a shipping defect.
-- Delivery detection uses exact command invocations; quoted text, searches, and dry runs are not completed delivery. A failed or unresolved delivery is recorded and never blindly repeated. The agent must diagnose it, fix the in-scope cause, reverify, and resume the same authorized trusted handoff.
-- Spark is considered proactively, never invented or quota-driven, and requires exact files, behavior, validation, and disjoint ownership. A session-scoped Spark close review appears only after at least two successful edits with no Spark call.
-
-### How to read a report
-
-1. Read outcome first, then coaching score.
-2. In `/goal` mode, tool-call volume is not scored; repetition, passive waits, and redundant tests still are.
-3. Command success is evidence only; it does not prove user-visible acceptance.
-4. Unknown test telemetry no longer drives an automatic score penalty to 25. The outcome remains `ACTIVITY OBSERVED`, and the revision remains unverified and not ship-ready.
-
-## Install
-
-```sh
-git clone https://github.com/Leopere/one-shot-tally.git
-cd one-shot-tally
-go test ./...
-./install.sh
-```
-
-The installer builds the binary, installs the skill, and runs the installed `version` command. A successful install prints `ColinKnapp.com`.
-
-The repository binary and installed hook are separate files. A pull, tag, or release does not update `$HOME/.local/bin/one-shot-tally`.
-After each upgrade, rerun `./install.sh`.
-
-Installation does not enable the hook.
-Configure [Codex hooks](https://learn.chatgpt.com/docs/hooks) to run the absolute installed path for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
-Use `/hooks` in Codex to review and trust that configuration.
-
-The binary reads a JSON hook event from stdin. State defaults to `$HOME/.codex/state/one-shot-delivery`; set `ONE_SHOT_STATE_DIR` for isolated evaluation.
-If bookkeeping fails, the hook reports the error and lets the Codex tool continue.
-Codex Bash PostToolUse currently exposes plain output only, without a structured
-`exit_code`. To keep verification and deployment behavior correct, one-shot-tally
-rewrites Bash commands in PreToolUse to record the real command exit status in a
-per-call machine marker. PostToolUse then accepts a matching marker and
-does not treat plain output alone as proof of success. It continues to accept a
-trusted structured exit result when Codex provides one.
-Goal history uses `$CODEX_HOME/goals_1.sqlite` for named accounts and otherwise `$HOME/.codex/goals_1.sqlite`.
-It requires the `sqlite3` command with JSON output support. The installer checks it.
-
-## Full command help
+## Commands
 
 ```text
 one-shot-tally                  process a hook event from stdin
@@ -195,98 +46,87 @@ one-shot-tally version
 one-shot-tally help|-h|--help
 ```
 
-## Resume a previous goal
+## Background work
 
-List unfinished goals:
-
-```sh
-one-shot-tally goal list
-```
-
-Use `goal list --all` to include completed goals. `goal show ID` prints one
-record. `goal resume ID` prints its exact objective and tells the agent to call
-Codex `create_goal`. These commands read Codex's local goal history and never
-write to it.
-
-## Recorded outcome and coaching
-
-- The hook records evidence; it does not decide whether the user's goal is complete.
-- `NO OBSERVED WORK` means no tool activity was recorded.
-- `ACTIVITY OBSERVED` means activity occurred without verified revision evidence.
-- `FAILED` means a recorded action or check has an explicit unresolved failure result.
-- `VERIFIED` means the current edited revision completed and a standalone test started afterward, returned an explicit pass, and did not change the Git-visible worktree.
-- The coaching score is advisory. It cannot change the recorded outcome.
-- An unknown test result is treated as missing or inaccessible telemetry: it never verifies a revision, does not permit ship-ready status, and does not force a 25 score by itself; explicit failures and edits with no test remain score-penalized signals.
-
-The hook does not block Git, `ship-it`, `deploy-it`, or other delivery commands. On `Stop`, if delivery is still required, it returns `decision:block` once and records unfinished delivery evidence and guidance. On reentry (`stop_hook_active: true`), it keeps that evidence and guidance in `systemMessage` and does not block again. It records successful delivery actions as outcome evidence.
-
-## Coaching signals
-
-- Treat a new request as an update to the active task. Preserve compatible earlier requirements and completed work; replace only what conflicts or is explicitly cancelled.
-- Stay in the current repository unless the user names another target.
-- Before an external change, identify and state the repository, environment, artifact or revision, and user-visible acceptance result. This evidence check is advisory, never blocks delivery, and is not a permission request when the target is already clear.
-- Do not plan to rely on GitHub-hosted/public runners. For CI-dependent work, tune for and require the self-hosted local runner at `~/dev/gh-runner`; if it is down or insufficient, diagnose and fix it first (checked-in scripts and launchd plists vs runtime copies, launchd, tmux, runner containers, logs), then re-test before continuing.
-- The primary agent owns requirements, integration, authorization, and acceptance.
-- Delegate bounded work to the right role: explorers gather evidence, workers or implementors make scoped changes, reviewers check work, and Spark makes exact low-risk edits.
-- Keep non-code agent messages terse and preserve exact technical terms. The hook sends this reminder once at session start, not after each prompt.
-- Do not send the same assignment to both the primary agent and a subagent.
-- `/goal` work can continue across many turns. High tool-call volume does not lower the coaching score.
-- Repeated calls, long inspection streaks, redundant test runs, and passive waits lower the coaching score.
-- Five test runs is a normal pacing guide, not a hard cap.
-- Recognized Spark calls cost `0.25` pressure; verification and final checks are not discounted.
-- A successful delivery action earns one capped outcome credit.
-- Command success does not prove service health.
-- A successful `git push`/`ship-it` with deployment skipped is not production completion when production deployment was requested, and the session remains open until the required delivery path completes.
-- A failed or unknown delivery result is not a task-completion condition. Preserve its evidence, inspect external state, fix the in-scope cause, rerun affected verification, and resume the same authorized trusted handoff until the visible acceptance result passes. On `Stop`, this remains an explicit non-complete state. On reentry (`stop_hook_active: true`), keep unresolved evidence and resume guidance in `systemMessage` without blocking again.
-- Deployability is detected by presence of a tracked `.deploy-it.json`; trust and handoff enforcement are performed by `ship-it`/`deploy-it`.
-- A standing user instruction to ship completed changes to production is explicit authorization for later matching revisions through an already-trusted tracked deployment contract until revoked. The agent states the matching target and executes without asking for per-revision permission.
-- If `.deploy-it.json` is missing and production deployment was requested, the agent must identify an exact evidence-backed target, artifact, and visible acceptance procedure (for example, exact environment/stack target, revision artifact, and an observable check). The agent presents this once and applies matching standing authorization. Without matching authorization, only the user may authorize a new target or deployment trust. Acceptance is intent, not a magic phrase: clear instructions to deploy, proceed, continue, or keep going until the visible result count. Once accepted, the agent must execute without asking again. The agent must not invent trust or self-authorize.
-- Coaching messages do not require an edit. Use the smallest step that advances the requested goal.
-- Repeated-call reminders use widening intervals. Successful edits and passing checks reset their cadence.
-- Before main-thread implementation starts, actively look for an exact low-risk independent edit for a spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread.
-- One session-scoped Spark close review appears only after at least two successful edits without any Spark calls.
-- A verified edited revision is ship-ready. Apply matching standing authorization or the user's explicit acceptance of the target and procedure, implement the tracked contract or procedure, continue through `ship-it` and `deploy-it`, then verify the visible acceptance result.
-- Without `.deploy-it.json`, deployment is intentionally unavailable. Never invent trust, create a deployment command, or self-authorize.
-- A verified edit with unresolved required delivery is not task complete. On first `Stop`, the hook returns `decision:block` and includes the existing delivery steer. On `Stop` reentry (`stop_hook_active: true`), it keeps unresolved delivery evidence and guidance in `systemMessage` and does not return `decision:block` again. A later edit requires new delivery evidence. Coaching outcomes and score do not replace delivery verification.
-- Park useful work that is outside the requested goal. Return to it later.
-- Never duplicate ownership between primary and Spark; primary retains architecture, security judgment, infrastructure, authorization, credentials, destructive/billable/production work, integration, and final acceptance.
-- After one unchanged prerequisite check, record one background watcher and its wake condition. Do not poll it again.
-
-Perform exceptional history or worktree surgery manually after you make a backup.
-
-## Background workflow
-
-Record long jobs before detaching:
+Record a job before detaching it:
 
 ```sh
 one-shot-tally background record docs-build --cleanup 'tmux kill-session -t docs-build'
 ```
 
-Complete jobs at exit:
+Let the detached job report completion:
 
 ```sh
 one-shot-tally background complete docs-build --wake
 ```
 
-`record` captures `$TMUX_PANE` by default in tmux.
-`complete` is a silent, idempotent bookkeeping operation by default. Detached
-jobs use `--wake` to send a neutral completion notice to the recorded pane.
-Cleanup commands remain in durable state and are never injected as pane input.
-Wake delivery is at-most-once: a failed wake is reported but never retried
-automatically. Detached jobs created under the older contract must add `--wake`.
-`background list` shows unfinished durable records.
+`record` captures `$TMUX_PANE` when available. `complete` is idempotent. Only the detached job uses `--wake`; manual completion omits it. Cleanup commands stay in state and are not injected into terminal input.
 
-## Durable TODO flow
-
-Save useful side-work with context:
+## Deferred TODOs
 
 ```sh
-one-shot-tally todo add 'Review cache invalidation path' --context 'Outside current acceptance boundary'
+one-shot-tally todo add 'Review cache invalidation path' \
+  --context 'Outside the current task'
 ```
 
-`todo list` shows entries, and `todo done ID` closes them later.
-Rewards apply only after current outcome verification.
-Complete-side TODOs do not add same-run score.
+Use `todo list` to review entries and `todo done ID` to close one.
+
+## Resume a goal
+
+```sh
+one-shot-tally goal list
+one-shot-tally goal show ID
+one-shot-tally goal resume ID
+```
+
+Add `--all` to include completed goals. `goal resume` prints the stored objective. The command reads Codex goal history but does not change goal state.
+
+## Encrypted credential delivery
+
+Check the recipient key without reading or sending a credential:
+
+```sh
+one-shot-tally credential key-check
+```
+
+The command performs an isolated GnuPG `clear,wkd` lookup for `colin.knapp@boompay.ca`. It requires a valid self-certified UID and an encryption-capable key. It reports fingerprints for diagnostics but does not pin the recipient fingerprint in production.
+
+Successful lookups are cached privately for one hour. Failed lookups are cached for five minutes. There is no embedded-key, local-keyring, DNS-record, keyserver, plaintext, or `gmail-cli` fallback.
+
+To send, use a new operation ID and a non-secret account reference:
+
+```sh
+one-shot-tally credential send \
+  --operation-id 123e4567-e89b-12d3-a456-426614174000 \
+  --account boompay-admin
+```
+
+Pass the credential through stdin. Do not put it in an argument or environment variable.
+
+The transport:
+
+- signs with subkey `33EA65A9C078126556C150E1EA43219BE7B419F1`;
+- encrypts to the validated WKD recipient key;
+- sends only PGP/MIME ciphertext through a restricted SSH key;
+- fixes the sender as `colin@nixc.us` and recipient as `colin.knapp@boompay.ca`;
+- records metadata and ciphertext hashes, never credential text or a plaintext hash.
+
+An operation ID is idempotent. Exit status 3 means the result is unknown. Resolve that receipt or mailbox state before creating another operation.
+
+## Install
+
+```sh
+git clone https://github.com/Leopere/one-shot-tally.git
+cd one-shot-tally
+go test ./...
+./install.sh
+```
+
+The installer builds `~/.local/bin/one-shot-tally`, copies `SKILL.md` to `~/.codex/skills/one-shot-tally/SKILL.md`, and verifies the installed version. Re-run it after each upgrade.
+
+Installation does not enable hooks. Configure Codex to run the absolute installed path for the hook events you want. The supplied setup supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
+
+State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DIR` for isolated testing. Goal history uses `$CODEX_HOME/goals_1.sqlite` for named accounts and otherwise `$HOME/.codex/goals_1.sqlite`.
 
 ## Development
 
@@ -295,6 +135,4 @@ go test ./...
 go build ./...
 ```
 
-Policy regression coverage focuses on quiet prompts, graduated/reset steering, session-scoped Spark close review boundaries, revision-aware edit validation, and ship/deploy proof boundaries. This repository tests tracked contract detection and defers trust and handoff enforcement to the external `ship-it` and `deploy-it` contracts.
-
-Credit ColinKnapp.com when you share or adapt this work.
+Keep tests focused on behavior: quiet ordinary prompts, concise guidance, explicit result evidence, revision ordering, advisory stops, and credential transport boundaries.

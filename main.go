@@ -18,21 +18,13 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.16.0"
+const binaryVersion = "1.17.0"
 
-const subagentGuidance = "Main thread owns requirements, architecture, authorization, integration, and acceptance. Use explorers for evidence; workers or implementors for scoped changes; reviewers for checks."
+const subagentGuidance = "Delegate independent work. Keep authorization and acceptance in the main thread."
 
-const sparkGuidance = "Before implementation, actively look for an exact, low-risk, independent, disjoint edit for spark_worker. When one exists, give exact files, expected behavior, and validation; otherwise continue in the main thread. Never use Spark for security judgment, infrastructure, credentials, ship/deploy, destructive/billable, sequential work, or overlapping ownership."
+const sparkGuidance = "Use Spark only for an exact, low-risk edit with separate files and clear validation."
 
-const communicationGuidance = "Keep non-code agent messages terse; preserve exact technical terms."
-
-const targetGuidance = "Before external changes, state target and visible result: evidence, not permission. If clear, continue without waiting."
-
-const acceptanceGuidance = "A standing user instruction to ship completed changes to production authorizes matching revisions through an already-trusted tracked contract until revoked. Do not ask per-revision. Only the user may authorize a new target or deployment trust. Otherwise present the procedure once; after acceptance, do not ask again."
-
-const deliveryGuidance = "After the latest edit succeeds and is verified, run ship-it immediately. Do not recommend it, ask separate shipping permission, or wait. With no production deploy-it contract, state target, revision, and visible acceptance procedure once; do not stop at the push. " + acceptanceGuidance + " Continue through ship-it/deploy-it and verify; never invent trust. Delivery failure is not a stopping point: fix its in-scope cause, then resume the same authorized trusted handoff. Never blindly retry."
-
-const runnerGuidance = "Never rely on GitHub Actions public or GitHub-hosted runners. Use the existing self-hosted local runner and its labels documented in ~/dev/gh-runner. If it stalls or is insufficient, diagnose and fix that runner first. Treat GitHub-hosted runner labels as a shipping defect."
+const acceptanceGuidance = "Use existing user authorization for matching trusted deployments. Only the user can authorize a new target or deployment trust."
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -311,7 +303,7 @@ func runHook(r io.Reader, w io.Writer) error {
 	}
 	switch e.HookEventName {
 	case "SessionStart":
-		context := "Finish the latest requested outcome; verify edits. Tally score is advisory. Stay in the current repository unless user names another target. " + targetGuidance + " " + deliveryGuidance + " " + runnerGuidance + " " + subagentGuidance + " " + sparkGuidance + " " + communicationGuidance
+		context := "Finish the current request and verify changes. Stay in the current repository unless the user names another target. Tally coaching is advisory."
 		goalActive, err := reconcileSessionGoal(e.SessionID)
 		if err != nil {
 			return err
@@ -598,7 +590,7 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	var messages []string
 	if goalChange == "start" {
-		messages = append(messages, "Goal mode started. High tool-call volume is expected and does not reduce the coaching score. Keep each call tied to the objective. Park unrelated work. "+subagentGuidance+" "+sparkGuidance)
+		messages = append(messages, "Goal mode started. Keep work tied to the objective; tool-call volume does not affect coaching. "+subagentGuidance+" "+sparkGuidance)
 	}
 	if repeats == 2 && isAgentSpawn(e.ToolName) {
 		messages = append(messages, "Duplicate worker check: parallel subagents are encouraged, but an identical assignment is redundant. Reuse that worker or give the new worker a distinct bounded task.")
@@ -847,7 +839,7 @@ func stop(e event, w io.Writer) error {
 	}
 	stewardship := ""
 	if s.BackgroundRecords > s.BackgroundCompletions {
-		stewardship = " Background work remains recorded: do not poll it; its completion command must wake the originating agent, which should resume the task and use the recorded cleanup command."
+		stewardship = " Background work remains recorded. Let its completion command wake the agent; do not poll it."
 	}
 	closure := closingLoop(s, deployContract)
 	if !e.StopHookActive && !goalActive {
@@ -858,22 +850,7 @@ func stop(e event, w io.Writer) error {
 		closure += sparkReview
 	}
 	message := line + ". " + outcomeAdvisory(recordedOutcome(s)) + stewardship + closure
-	deliveryPending := requiredDeliveryPending(s)
-	if deliveryPending && e.StopHookActive {
-		message += " Stop continuation already used: required delivery remains unresolved, but this hook will not block the same Stop again."
-	}
-	if deliveryPending && !e.StopHookActive {
-		reason := strings.TrimSpace(closure)
-		if reason == "" {
-			reason = "The verified current revision still requires delivery. Run ship-it now and continue through its tracked deploy-it handoff."
-		}
-		return writeJSON(w, hookOutput{
-			Decision:      "block",
-			Reason:        "Deployment is required and this turn cannot stop yet. " + reason,
-			SystemMessage: message,
-		})
-	}
-	if deliveryPending || goalActive || !finalPassed(s) {
+	if requiredDeliveryPending(s) || goalActive || !finalPassed(s) {
 		return writeJSON(w, hookOutput{SystemMessage: message})
 	}
 	if !s.RecordedInLifetime {
@@ -891,22 +868,22 @@ func stop(e event, w io.Writer) error {
 func closingLoop(s state, deployContract bool) string {
 	kind, attempted, known, succeeded, _ := latestDeliveryResult(s)
 	if attempted && known && !succeeded && kind == "deploy" {
-		return " Closing loop: deploy-it did not complete. This is not a stopping point. Do not blindly rerun it. Diagnose the preserved failure, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
+		return " Closing loop: deploy-it failed. Diagnose the recorded failure, fix the cause, reverify, and resume the authorized handoff. Do not retry blindly."
 	}
 	if attempted && known && !succeeded && kind == "ship" {
-		return " Closing loop: ship-it did not complete cleanly, and Git may already be shipped. This is not a stopping point. Preserve the failure, inspect Git and deployment state, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Do not blindly repeat the failed command. Stop only for missing user authorization or a genuinely blocked external prerequisite."
+		return " Closing loop: ship-it failed, and Git may already be shipped. Inspect Git and deployment state, fix the cause, reverify, and resume the authorized handoff. Do not retry blindly."
 	}
 	if attempted && !known && kind == "deploy" {
-		return " Closing loop: deploy-it returned no explicit result. This is not a stopping point. Inspect deployment state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Do not blindly repeat the unresolved command. Stop only for missing user authorization or a genuinely blocked external prerequisite."
+		return " Closing loop: deploy-it returned no result. Inspect deployment state before deciding whether to retry."
 	}
 	if attempted && !known && kind == "ship" {
-		return " Closing loop: ship-it returned no explicit result, and Git may already be shipped. This is not a stopping point. Inspect repository and deployment state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
+		return " Closing loop: ship-it returned no result, and Git may already be shipped. Inspect repository and deployment state before deciding whether to retry."
 	}
 	if attempted && known && !succeeded {
-		return " Closing loop: the recorded delivery action did not complete. This is not a stopping point. Preserve its failure, inspect external state, fix the in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
+		return " Closing loop: delivery failed. Inspect the recorded failure, fix the cause, reverify, and resume the authorized handoff."
 	}
 	if attempted && !known {
-		return " Closing loop: the recorded delivery action returned no explicit result. This is not a stopping point. Inspect external state, fix any in-scope cause, rerun affected verification, then resume the same authorized trusted handoff and verify the visible result. Stop only for missing user authorization or a genuinely blocked external prerequisite."
+		return " Closing loop: delivery returned no result. Inspect external state before deciding whether to retry."
 	}
 	if s.Revision == 0 {
 		return ""
@@ -918,18 +895,18 @@ func closingLoop(s state, deployContract bool) string {
 		return " Closing loop: verify the current revision before shipping."
 	}
 	if recoveredCurrentDeployment(s) {
-		return " Closing loop: shipping and deployment completed. Confirm the user-visible acceptance result."
+		return " Closing loop: shipping and deployment completed. Confirm the visible result."
 	}
 	if shippedCurrentRevision(s) {
 		if deployContract {
-			return " Closing loop: shipping completed. Confirm the ship-it deploy-it handoff and the user-visible acceptance result. Apply matching standing production authorization without asking for per-revision permission; do not create new deployment trust without exact user authorization."
+			return " Closing loop: shipping completed. Confirm deployment and the visible result. Use matching user authorization; only the user can authorize new trust."
 		}
-		return " Closing loop: shipping completed, but no tracked .deploy-it.json is present and production was not deployed. If production was requested, self-resolve the missing handoff: determine the exact target, shipped revision, and visible acceptance procedure from evidence, then present that procedure once. " + acceptanceGuidance + " Apply matching standing authorization, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result; do not stop at the push, invent trust, or self-authorize."
+		return " Closing loop: shipping completed without a `.deploy-it.json` contract. If production was requested, state the target, revision, and visible check. " + acceptanceGuidance
 	}
 	if deployContract {
-		return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it, ask for separate shipping permission, or pause for acknowledgement. It will hand off to the tracked deploy-it contract only when that exact contract is already trusted. Apply matching standing production authorization without asking again, then confirm the user-visible acceptance result."
+		return " Closing loop: verified changes are ready. Run ship-it; it will use the tracked deployment contract. Confirm the visible result."
 	}
-	return " Closing loop: verified changes are ship-ready. Run ship-it now; do not merely recommend it, ask for separate shipping permission, or pause for acknowledgement. If production was requested and no tracked .deploy-it.json exists after shipping, determine the exact target, artifact or revision, and visible acceptance procedure from evidence, then present it once. " + acceptanceGuidance + " Apply matching standing authorization, implement the tracked contract or procedure, continue through ship-it/deploy-it, and verify the visible result."
+	return " Closing loop: verified changes are ready. Run ship-it. If production was requested without a deployment contract, state the target, revision, and visible check. " + acceptanceGuidance
 }
 
 func outcomeAdvisory(outcome string) string {
