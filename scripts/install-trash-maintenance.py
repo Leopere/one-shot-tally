@@ -74,7 +74,7 @@ def main():
     if os.getuid() == 0:
         parser.error("Run as the logged-in user, without sudo")
     if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SANDBOX"):
-        parser.error("Run installation from your normal macOS Terminal. Restricted agent sessions must not activate this job.")
+        parser.error("Run installation from your normal macOS Terminal.")
     definition = home / "Library/LaunchAgents" / (LABEL + ".plist")
     target = home / ".local/libexec/trash-maintenance"
     domain = "gui/" + str(os.getuid())

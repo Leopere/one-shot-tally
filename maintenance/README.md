@@ -10,8 +10,6 @@ Unknown or invalid dates, future dates, top-level symlinks, and hard-linked regu
 
 ## Activate once from macOS Terminal
 
-The Codex permission profile in this workspace explicitly denies Trash access. Preparing and testing the code does not grant that access. No job has been activated by the coding agent, and no protected Trash contents were read or removed.
-
 Run this once in your normal macOS Terminal, without sudo:
 
 ```sh
@@ -28,7 +26,7 @@ tail -n 5 ~/Library/Logs/trash-maintenance.log
 tail -n 5 ~/Library/Logs/trash-maintenance.error.log
 ```
 
-Errors remain visible in the error log. Permission failures do not trigger a bypass. Reports distinguish eligible, deleted, skipped, and failed items without recording filenames or contents. `removedEntries` counts actual removals, including descendants. `partiallyDeleted` records directories where some contents were removed before a failure; these are not counted as completed deletions.
+Errors remain visible in the error log. Reports distinguish eligible, deleted, skipped, and failed items without recording filenames or contents. `removedEntries` counts actual removals, including descendants. `partiallyDeleted` records directories where some contents were removed before a failure; these are not counted as completed deletions.
 
 To stop automatic cleanup:
 
@@ -45,4 +43,4 @@ xcrun swiftc maintenance/TrashMaintenance.swift maintenance/Tests.swift -o /tmp/
 SHIP_IT_KEEP_TEST_DIRS=1 python3 scripts/test-trash-maintenance-installer.py
 ```
 
-Preparation compiles the binary, validates the plist, and runs only `--help`. Fixture tests use ordinary temporary directories and an injected clock. They never access actual Trash or load a LaunchAgent. Fixtures remain available for inspection under the current filesystem restrictions. Actual protected-directory cleanup remains a host acceptance check after activation.
+Preparation compiles the binary, validates the plist, and runs only `--help`. Fixture tests use ordinary temporary directories and an injected clock. They never access actual Trash or load a LaunchAgent. Actual protected-directory cleanup remains a host acceptance check after activation.

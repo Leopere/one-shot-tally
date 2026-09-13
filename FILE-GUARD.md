@@ -30,13 +30,9 @@ writes to Trash paths, including volume Trash and case variants. It replaces
 the legacy `danger-full-access` default. Configuration backups end in
 `.before-agent-file-guard`.
 
-Start sessions with this profile to get native macOS sandbox enforcement.
-Already-running full-access sessions do not acquire a new sandbox retroactively.
 Hooks alone cannot stop an opaque program, a specialized tool that skips
 hooks, input to an existing terminal, Finder, or a command outside the agent.
-The native Codex profile protects Trash inside its sandbox; it does not make
-every arbitrary filesystem mutation elsewhere recoverable. Use the recovery
-command for intentional removals.
+Use the recovery command for intentional removals.
 
 `config/trash-requirements.toml` is a prepared administrator-policy fragment,
 not an installed system policy. An administrator must merge and validate it

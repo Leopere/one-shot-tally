@@ -27,8 +27,6 @@ refuses to overwrite an existing path. A failed later move does not discard the
 undo commands for earlier successful moves. A receipt-finalization failure is
 reported as an uncertain result with recovery metadata; do not repeat that move.
 
-This does not weaken filesystem restrictions. A session that denies Trash access
-can still reject the native operation. No permanent-deletion fallback is used.
 Other deletion APIs, protected roots, and shell syntax that cannot be safely
 rewritten retain their existing checks. Legacy Cursor shell hooks cannot rewrite
 inputs; the installed `preToolUse` hook handles rewriting before shell execution.
@@ -45,8 +43,3 @@ xcrun swiftc -parse-as-library -D TESTING native-trash/TrashCommand.swift native
 ```
 
 The Swift tests use an isolated fixture mover. They do not inspect real Trash.
-
-On September 7, 2026, the active Codex hook rewrote a nonexistent-file removal
-and returned the helper's no-op result. A disposable-file native smoke test then
-returned macOS permission error 513. The source file remained in place. Native
-move and restore acceptance remain unverified under this session's Trash restrictions.

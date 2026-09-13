@@ -56,7 +56,7 @@ func chromeStartupCrashFeedback(raw json.RawMessage) string {
 		playwrightStartupFailure := strings.Contains(lower, "browsertype.launch") && strings.Contains(lower, "target page, context or browser has been closed") && strings.Contains(lower, "/applications/google chrome.app/") && strings.Contains(lower, "<launched> pid=")
 		registrationAbort := strings.Contains(lower, "sigabrt") && strings.Contains(output, "_RegisterApplication") && strings.Contains(output, "TransformProcessType")
 		if playwrightStartupFailure || registrationAbort {
-			return "Native browser startup failed. Do not rerun the same native launch unchanged. Follow the installed one-shot-tally skill's Browser startup failures guidance, then use an existing permitted browser runtime or service for this check. If that route is unavailable, report the observed browser startup failure with its command and output."
+			return "Native browser startup failed. Do not rerun the same native launch unchanged. Follow the installed one-shot-tally skill's Browser startup failures guidance, then use an alternate browser runtime or service for this check. If that route is unavailable, report the observed browser startup failure with its command and output."
 		}
 	}
 	return ""

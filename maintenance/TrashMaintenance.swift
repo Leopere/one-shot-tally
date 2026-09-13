@@ -129,7 +129,7 @@ func maintain(root: URL, now: Date, dryRun: Bool,
     var report = MaintenanceReport(dryRun: dryRun)
     let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     if fd < 0 && errno == ENOENT { return report }
-    guard fd >= 0 else { throw MaintenanceError("Cannot open maintenance root (errno \(errno)); no permission bypass attempted") }
+    guard fd >= 0 else { throw MaintenanceError("Cannot open maintenance root (errno \(errno))") }
     defer { close(fd) }
     var rootInfo = stat()
     guard fstat(fd, &rootInfo) == 0, rootInfo.st_uid == geteuid(),
