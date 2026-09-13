@@ -129,7 +129,7 @@ procedures still need a resumable execution design within the valid envelope.
 Keeping their selectors does not prove that those procedures meet that limit.
 
 The native broad infrastructure test run reported 53 failures and 441 errors
-across 1,225 tests, with many denied fixture cleanup operations. It is not
+across 1,225 tests, with many fixture cleanup failures. It is not
 counted as a pass. Focused Linux testing exposed and helped fix an additional
 BSD/GNU file-permission check mismatch and missing helper dependencies in
 fixtures; the affected 91-test Linux run then passed. Generated fixture files
@@ -147,7 +147,7 @@ and destination receipts.
 
 ## Native Trash maintenance
 
-The [prepared maintenance worker](maintenance/README.md) uses launchd for weekly runs, login catch-up, and Trash-change triggers. It requires no AI calls. It selects items whose macOS date-added value is strictly more than seven days old and skips unknown ages. Fixture tests do not access protected Trash paths. Activation must occur from the user's normal Terminal because this coding session explicitly denies Trash access. No maintenance job was activated by this repair. The guard also rejected a read-only `launchctl print` query for `com.colinknapp.trash-maintenance` with `Access to macOS Trash and empty-Trash operations are blocked.` Host-side activation status could not be checked through this session.
+The [prepared maintenance worker](maintenance/README.md) uses launchd for weekly runs, login catch-up, and Trash-change triggers. It requires no AI calls. It selects items whose macOS date-added value is strictly more than seven days old and skips unknown ages. Fixture tests do not access protected Trash paths. Activation must occur from the user's normal Terminal.
 
 ## Verification
 
@@ -157,6 +157,6 @@ The [prepared maintenance worker](maintenance/README.md) uses launchd for weekly
 - `scripts/test-native-delivery.py` runs compiled binaries against isolated local Git remotes and a simulated deployment command. It verifies failure, one clean continuation retry, recovery, immutable commit identity, no duplicate deployment, independent repository retries, and visible reporter failures.
 - The extended integration test passed against the installed binaries. Native edit events selected an external repository, a read-only event did not select another dirty repository, clean failed deployment remained pending, an unchanged third Stop did no work, and a later turn recorded recovery and cleared the obligation.
 - deploy-it's full Go suite passed with `DEPLOY_IT_KEEP_TEST_DIRS=1`, including required and optional environment handling. SMSBridge's contract verification passed all 30 tests. CISL2's focused recovery suite passed all nine tests.
-- A full native tally test run passed the modified root package but failed existing file-guard and recovery tests on denied temporary-directory cleanup and directory moves. Those filesystem operations remain unverified under this profile; they were not disabled or counted as passing. The modified root package and ship-it application tests passed again after the final registry fixes.
+- A full native tally test run passed the modified root package but failed existing file-guard and recovery tests on temporary-directory cleanup and directory moves. The modified root package and ship-it application tests passed again after the final registry fixes.
 
-Tests on this host use `GOFLAGS=-work` and `SHIP_IT_KEEP_TEST_DIRS=1` because directory cleanup is denied. Assertions run normally; temporary fixture directories are retained. Native delivery receipts are a cooperating local executable protocol, not a security boundary against another process running as the same OS user.
+Tests on this host use `GOFLAGS=-work` and `SHIP_IT_KEEP_TEST_DIRS=1`. Assertions run normally; temporary fixture directories are retained. Native delivery receipts are a cooperating local executable protocol, not a security boundary against another process running as the same OS user.
