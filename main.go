@@ -60,29 +60,30 @@ type event struct {
 }
 
 type pendingCall struct {
-	Test               bool      `json:"test"`
-	BrowserLaunch      bool      `json:"browser_launch,omitempty"`
-	Production         bool      `json:"production"`
-	Revision           int       `json:"revision"`
-	StartedAt          time.Time `json:"started_at"`
-	RepeatedTest       bool      `json:"repeated_test"`
-	BackgroundRecord   bool      `json:"background_record"`
-	BackgroundComplete bool      `json:"background_complete"`
-	TodoAdd            bool      `json:"todo_add"`
-	TodoDone           bool      `json:"todo_done"`
-	GoalTransition     string    `json:"goal_transition,omitempty"`
-	Edit               bool      `json:"edit,omitempty"`
-	Shipping           bool      `json:"shipping,omitempty"`
-	Deploying          bool      `json:"deploying,omitempty"`
-	OpaqueMutation     bool      `json:"opaque_mutation,omitempty"`
-	DeployCommitMatch  bool      `json:"deploy_commit_match,omitempty"`
-	TestEligible       bool      `json:"test_eligible,omitempty"`
-	WorktreeKnown      bool      `json:"worktree_known,omitempty"`
-	WorktreeSnapshot   string    `json:"worktree_snapshot,omitempty"`
-	WorkingDirectory   string    `json:"working_directory,omitempty"`
-	Sequence           int       `json:"sequence,omitempty"`
-	OperationKey       string    `json:"operation_key,omitempty"`
-	OperationKind      string    `json:"operation_kind,omitempty"`
+	Test                 bool              `json:"test"`
+	BrowserLaunch        bool              `json:"browser_launch,omitempty"`
+	Production           bool              `json:"production"`
+	Revision             int               `json:"revision"`
+	StartedAt            time.Time         `json:"started_at"`
+	RepeatedTest         bool              `json:"repeated_test"`
+	BackgroundRecord     bool              `json:"background_record"`
+	BackgroundComplete   bool              `json:"background_complete"`
+	TodoAdd              bool              `json:"todo_add"`
+	TodoDone             bool              `json:"todo_done"`
+	GoalTransition       string            `json:"goal_transition,omitempty"`
+	Edit                 bool              `json:"edit,omitempty"`
+	Shipping             bool              `json:"shipping,omitempty"`
+	Deploying            bool              `json:"deploying,omitempty"`
+	OpaqueMutation       bool              `json:"opaque_mutation,omitempty"`
+	DeployCommitMatch    bool              `json:"deploy_commit_match,omitempty"`
+	TestEligible         bool              `json:"test_eligible,omitempty"`
+	WorktreeKnown        bool              `json:"worktree_known,omitempty"`
+	WorktreeSnapshot     string            `json:"worktree_snapshot,omitempty"`
+	CommandRootSnapshots map[string]string `json:"command_root_snapshots,omitempty"`
+	WorkingDirectory     string            `json:"working_directory,omitempty"`
+	Sequence             int               `json:"sequence,omitempty"`
+	OperationKey         string            `json:"operation_key,omitempty"`
+	OperationKind        string            `json:"operation_kind,omitempty"`
 }
 
 type state struct {
@@ -596,8 +597,12 @@ func preToolUse(e event, w io.Writer) error {
 	if s.Revision > 0 && isEdit {
 		worktreeSnapshot, worktreeKnown = gitWorktreeSnapshot(e.CWD)
 	}
+	commandRootSnapshots := map[string]string(nil)
+	if isOpaqueMutation {
+		commandRootSnapshots = opaqueCommandRootSnapshots(command)
+	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, BrowserLaunch: isBrowserLaunch, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, OpaqueMutation: isOpaqueMutation, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, WorkingDirectory: e.CWD, Sequence: s.TotalCalls, OperationKey: operationKey, OperationKind: operationKind}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, BrowserLaunch: isBrowserLaunch, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, OpaqueMutation: isOpaqueMutation, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, CommandRootSnapshots: commandRootSnapshots, WorkingDirectory: e.CWD, Sequence: s.TotalCalls, OperationKey: operationKey, OperationKind: operationKind}
 	}
 	if repeats == 4 {
 		s.RepeatedWarnings++
@@ -650,6 +655,9 @@ func postToolUse(e event, w io.Writer) error {
 			}
 		}
 		resultKnown, resultSucceeded = hookResponseResult(e.ToolName, e.ToolResponse)
+		if err := recordChangedOpaqueCommandRoots(e.SessionID, pending.CommandRootSnapshots); err != nil {
+			return err
+		}
 		// Some local hooks provide only stdout. A strong browser-startup signature
 		// can guide the next action, but it must never change result accounting.
 		// A structured successful result always suppresses the advisory.
@@ -1787,7 +1795,7 @@ func goalTransition(e event) string {
 
 func isCommandTool(tool string) bool {
 	tool = strings.ToLower(tool)
-	return tool == "bash" || strings.Contains(tool, "exec_command") || strings.Contains(tool, "shell") || strings.Contains(tool, "terminal")
+	return tool == "bash" || normalizedToolName(tool) == "exec" || strings.Contains(tool, "exec_command") || strings.Contains(tool, "shell") || strings.Contains(tool, "terminal")
 }
 
 func goalCommand(args []string, w io.Writer) error {
