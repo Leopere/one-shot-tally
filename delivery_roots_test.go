@@ -9,6 +9,80 @@ import (
 	"time"
 )
 
+func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) {
+	for _, wrapped := range []bool{false, true} {
+		t.Run(strconv.FormatBool(wrapped), func(t *testing.T) {
+			stateDir := retainedTestDir(t)
+			t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
+			parent, _ := committedTestRepo(t, "package parent\n")
+			sibling, siblingFile := committedTestRepo(t, "package sibling\n")
+			sibling, err := filepath.EvalSymlinks(sibling)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unrelated, unrelatedFile := committedTestRepo(t, "package unrelated\n")
+			if err := os.WriteFile(unrelatedFile, []byte("package unrelated\nconst dirty = true\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			input := map[string]any{"cmd": "python3 - <<'PY'\nfrom pathlib import Path\nPath('app.go').write_text('package changed\\n')\nPY", "workdir": sibling}
+			if wrapped {
+				input = map[string]any{"cmd": "text((await tools.exec_command({cmd:" + strconv.Quote(input["cmd"].(string)) + ",workdir:" + strconv.Quote(sibling) + ",yield_time_ms:1000,max_output_tokens:1600})).output);"}
+			}
+			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+				if eventName == "PostToolUse" {
+					if err := os.WriteFile(siblingFile, []byte("package changed\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				hook(t, stateDir, map[string]any{
+					"session_id": "parent-session", "turn_id": "child-turn", "hook_event_name": eventName,
+					"tool_name": "Bash", "tool_use_id": "child-edit", "cwd": parent,
+					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
+				})
+			}
+			registryPath, err := deliveryRootRegistryPath("parent-session")
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry, err := loadDeliveryRootRegistry(registryPath, "parent-session")
+			if err != nil || len(registry.Roots) != 1 || registry.Roots[sibling] != 1 || registry.Roots[unrelated] != 0 || registry.Roots[parent] != 0 {
+				t.Fatalf("parent Stop registry = %#v, err=%v", registry, err)
+			}
+			// A second command that leaves the same dirty tree unchanged must not
+			// create a new delivery generation merely because it named a workdir.
+			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+				hook(t, stateDir, map[string]any{
+					"session_id": "parent-session", "turn_id": "another-child-turn", "hook_event_name": eventName,
+					"tool_name": "Bash", "tool_use_id": "no-change", "cwd": parent,
+					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
+				})
+			}
+			registry, err = loadDeliveryRootRegistry(registryPath, "parent-session")
+			if err != nil || registry.Roots[sibling] != 1 {
+				t.Fatalf("unchanged worktree advanced generation: %#v, err=%v", registry, err)
+			}
+		})
+	}
+}
+
+func TestCommandWorkdirRejectsDynamicAndForbiddenRoots(t *testing.T) {
+	repo, _ := committedTestRepo(t, "package example\n")
+	alias := filepath.Join(retainedTestDir(t), "safe-alias")
+	if err := os.Symlink(filepath.Join(retainedTestDir(t), ".Trash", "missing"), alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{
+		`tools.exec_command({cmd:"python3 mutate.py",workdir:` + strconv.Quote(repo) + ` + suffix})`,
+		`tools.exec_command({cmd:"python3 mutate.py",workdir:` + strconv.Quote(alias) + `})`,
+		`tools.exec_command({cmd:"python3 mutate.py",workdir:"/tmp/.Trashes/blocked"})`,
+		`console.log(` + strconv.Quote(`tools.exec_command({cmd:"mutate",workdir:`+strconv.Quote(repo)+`})`) + `)`,
+	} {
+		if roots := opaqueCommandRootSnapshots(command, nil); len(roots) != 0 {
+			t.Fatalf("unsupported command selected roots: %q: %#v", command, roots)
+		}
+	}
+}
+
 func TestExplicitEditRootsTrackOnlyStructuredEditedRepositories(t *testing.T) {
 	stateDir := retainedTestDir(t)
 	t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
@@ -71,7 +145,10 @@ func TestExplicitEditRootsTrackOnlyStructuredEditedRepositories(t *testing.T) {
 func TestOpaquePythonLoopTracksOnlyChangedFiniteTemplateRepositories(t *testing.T) {
 	stateDir := retainedTestDir(t)
 	t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
-	parent := retainedTestDir(t)
+	parent, err := filepath.EvalSymlinks(retainedTestDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	garageTarget := filepath.Join(parent, "garage-boompay-ca")
 	partnersTarget := filepath.Join(parent, "partners-boompay-ca")
 	unrelatedTarget := filepath.Join(parent, "unrelated-boompay-ca")

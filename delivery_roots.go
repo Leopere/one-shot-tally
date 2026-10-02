@@ -25,6 +25,10 @@ var (
 	// This is the Python form used by a loop that constructs a repository root
 	// from a literal parent and a finite application name.
 	pythonPathJoinRE = regexp.MustCompile(`(?s)\bPath\(\s*['\"](/[^'\"\r\n]*)['\"]\s*\)\s*/\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*['\"]([^/'\"\r\n]+)['\"]\s*\)`)
+	// Native code-mode hooks wrap exec_command in JavaScript. Accept only a
+	// literal argument object; never evaluate an expression to discover roots.
+	execCommandObjectRE = regexp.MustCompile(`\btools\.exec_command\s*\(\s*\{((?:\s*(?:"(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z_0-9]*)\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?[0-9]+|true|false|null)\s*,?)+)\}\s*\)`)
+	execCommandFieldRE  = regexp.MustCompile(`("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z_0-9]*)\s*:\s*("(?:[^"\\]|\\.)*"|-?[0-9]+|true|false|null)`)
 )
 
 // deliveryRootRegistry is intentionally separate from per-turn tally state:
@@ -98,11 +102,29 @@ func recordDeliveryRoots(sessionID string, roots map[string]struct{}) error {
 }
 
 // opaqueCommandRootSnapshots records a small, attributable set of repository
-// snapshots for a dynamic Python loop. It deliberately does not walk a parent
-// directory: every selected root must come from a finite literal loop value
-// substituted into an absolute f-string path in the command itself.
-func opaqueCommandRootSnapshots(command string) map[string]string {
+// snapshots for explicit execution directories and finite Python loop targets.
+// It deliberately does not walk a parent directory. A root is recorded only
+// when its worktree actually changes between the native pre/post tool events.
+func opaqueCommandRootSnapshots(command string, input json.RawMessage) map[string]string {
 	roots := pythonFiniteLoopRoots(command)
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(input, &fields)
+	addWorkdir := func(raw json.RawMessage) {
+		var path string
+		if json.Unmarshal(raw, &path) == nil {
+			if root, ok := canonicalCommandRoot(path); ok {
+				roots[root] = struct{}{}
+			}
+		}
+	}
+	addWorkdir(fields["workdir"])
+	for _, object := range execCommandObjectRE.FindAllStringSubmatch(command, -1) {
+		for _, field := range execCommandFieldRE.FindAllStringSubmatch(object[1], -1) {
+			if field[1] == "workdir" || field[1] == `"workdir"` {
+				addWorkdir(json.RawMessage(field[2]))
+			}
+		}
+	}
 	if len(roots) == 0 {
 		return nil
 	}
