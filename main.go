@@ -1972,6 +1972,12 @@ func formatCallUnits(units int) string {
 }
 
 func commandFrom(raw json.RawMessage) string {
+	// Code-mode exec hooks carry their FREEFORM JavaScript as a JSON string.
+	// Preserve it so literal child workdirs can participate in native delivery.
+	var source string
+	if json.Unmarshal(raw, &source) == nil {
+		return source
+	}
 	var fields map[string]any
 	if json.Unmarshal(raw, &fields) != nil {
 		return ""

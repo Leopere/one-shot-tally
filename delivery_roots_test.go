@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,8 +11,8 @@ import (
 )
 
 func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) {
-	for _, wrapped := range []bool{false, true} {
-		t.Run(strconv.FormatBool(wrapped), func(t *testing.T) {
+	for _, shape := range []string{"direct", "wrapped", "freeform"} {
+		t.Run(shape, func(t *testing.T) {
 			stateDir := retainedTestDir(t)
 			t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
 			parent, _ := committedTestRepo(t, "package parent\n")
@@ -24,9 +25,15 @@ func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) 
 			if err := os.WriteFile(unrelatedFile, []byte("package unrelated\nconst dirty = true\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			input := map[string]any{"cmd": "python3 - <<'PY'\nfrom pathlib import Path\nPath('app.go').write_text('package changed\\n')\nPY", "workdir": sibling}
-			if wrapped {
-				input = map[string]any{"cmd": "text((await tools.exec_command({cmd:" + strconv.Quote(input["cmd"].(string)) + ",workdir:" + strconv.Quote(sibling) + ",yield_time_ms:1000,max_output_tokens:1600})).output);"}
+			command := "python3 - <<'PY'\nfrom pathlib import Path\nPath('app.go').write_text('package changed\\n')\nPY"
+			var input any = map[string]any{"cmd": command, "workdir": sibling}
+			tool := "Bash"
+			if shape != "direct" {
+				source := "text((await tools.exec_command({cmd:" + strconv.Quote(command) + ",workdir:" + strconv.Quote(sibling) + ",yield_time_ms:1000,max_output_tokens:1600})).output);"
+				input = map[string]any{"cmd": source}
+				if shape == "freeform" {
+					input, tool = source, "functions.exec"
+				}
 			}
 			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
 				if eventName == "PostToolUse" {
@@ -36,7 +43,7 @@ func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) 
 				}
 				hook(t, stateDir, map[string]any{
 					"session_id": "parent-session", "turn_id": "child-turn", "hook_event_name": eventName,
-					"tool_name": "Bash", "tool_use_id": "child-edit", "cwd": parent,
+					"tool_name": tool, "tool_use_id": "child-edit", "cwd": parent,
 					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
 				})
 			}
@@ -53,7 +60,7 @@ func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) 
 			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
 				hook(t, stateDir, map[string]any{
 					"session_id": "parent-session", "turn_id": "another-child-turn", "hook_event_name": eventName,
-					"tool_name": "Bash", "tool_use_id": "no-change", "cwd": parent,
+					"tool_name": tool, "tool_use_id": "no-change", "cwd": parent,
 					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
 				})
 			}
@@ -281,5 +288,21 @@ func TestTouchedRootLockDoesNotAgeSteal(t *testing.T) {
 		t.Fatal(err)
 	case <-time.After(time.Second):
 		t.Fatal("second registry lock did not acquire after release")
+	}
+}
+
+func TestFreeformCommandIsPreservedWithoutEvaluation(t *testing.T) {
+	source := `text(await tools.exec_command({cmd:"echo example",workdir:"/example"}));`
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := commandFrom(encoded); got != source {
+		t.Fatalf("command = %q", got)
+	}
+	for _, raw := range []string{`null`, `123`, `["ignored"]`, `{ "cmd":123 }`} {
+		if got := commandFrom(json.RawMessage(raw)); got != "" {
+			t.Fatalf("unexpected command: %q", got)
+		}
 	}
 }
