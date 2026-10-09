@@ -6,12 +6,146 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
+func TestNestedPatchRegistersOnlyChangedTargets(t *testing.T) {
+	for _, shape := range []string{"freeform", "wrapped", "template", "single-quoted"} {
+		t.Run(shape, func(t *testing.T) {
+			stateDir := retainedTestDir(t)
+			t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
+			parent, parentFile := committedTestRepo(t, "package parent\n")
+			sibling, siblingFile := committedTestRepo(t, "package sibling\n")
+			sibling, err := filepath.EvalSymlinks(sibling)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unchanged, _ := committedTestRepo(t, "package unchanged\n")
+			unrelated, unrelatedFile := committedTestRepo(t, "package unrelated\n")
+			patch := "*** Begin Patch\n*** Update File: " + siblingFile + "\n@@\n-package sibling\n+package changed\n*** Update File: " + filepath.Join(unchanged, "app.go") + "\n@@\n package unchanged\n*** End Patch"
+			literal := strconv.Quote(patch)
+			if shape == "template" {
+				literal = "`" + patch + "`"
+			} else if shape == "single-quoted" {
+				literal = "'" + strings.ReplaceAll(patch, "\n", `\n`) + "'"
+			}
+			source := "text(await tools.apply_patch(" + literal + "));"
+			var input any = source
+			if shape == "wrapped" {
+				input = map[string]any{"cmd": source}
+			}
+			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+				if eventName == "PostToolUse" {
+					// Concurrent unrelated changes must not expand the attributed set.
+					for _, file := range []string{siblingFile, unrelatedFile, parentFile} {
+						if err := os.WriteFile(file, []byte("package changed\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				hook(t, stateDir, map[string]any{
+					"session_id": "nested-patch", "turn_id": "turn", "hook_event_name": eventName,
+					"tool_name": "functions.exec", "tool_use_id": "patch", "cwd": parent,
+					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
+				})
+			}
+			registryPath, err := deliveryRootRegistryPath("nested-patch")
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry, err := loadDeliveryRootRegistry(registryPath, "nested-patch")
+			if err != nil || len(registry.Roots) != 1 || registry.Roots[sibling] != 1 || registry.Roots[unrelated] != 0 {
+				t.Fatalf("changed patch roots = %#v, err=%v", registry.Roots, err)
+			}
+			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+				hook(t, stateDir, map[string]any{
+					"session_id": "nested-patch", "turn_id": "turn", "hook_event_name": eventName,
+					"tool_name": "functions.exec", "tool_use_id": "no-op", "cwd": parent,
+					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
+				})
+			}
+			registry, err = loadDeliveryRootRegistry(registryPath, "nested-patch")
+			if err != nil || len(registry.Roots) != 1 || registry.Roots[sibling] != 1 {
+				t.Fatalf("no-op patch advanced roots = %#v, err=%v", registry.Roots, err)
+			}
+		})
+	}
+}
+
+func TestNestedPatchLiteralExtraction(t *testing.T) {
+	for _, literal := range []string{
+		`"*** Update File: /tmp/a\"b.go\n"`,
+		"`*** Update File: /tmp/a\\`b.go\n`",
+		"`*** Update File: /tmp/\\${name}.go\n`",
+	} {
+		if paths := nestedPatchPaths("await tools.apply_patch(" + literal + ");"); len(paths) != 1 {
+			t.Fatalf("escaped literal did not yield path: %q: %#v", literal, paths)
+		}
+	}
+	call := `tools.apply_patch("*** Update File: /tmp/example.go\n")`
+	for _, source := range []string{
+		"console.log(" + strconv.Quote(call) + ")",
+		"const example = '" + call + "';",
+		"const example = `" + call + "`;",
+		"// " + call,
+		"/* " + call + " */",
+		"const example = /" + call + "/;",
+		"const example = '" + call,
+		"/* " + call,
+		"const example = `outer ${`inner`} " + call + "`;",
+		"object." + call,
+		"$" + call,
+		`tools.apply_patch(patch)`,
+		`tools.apply_patch("*** Update File: /tmp/example.go\n" + suffix)`,
+		"tools.apply_patch(`*** Update File: /tmp/${name}.go\n`)",
+		`tools.apply_patch({patch:"*** Update File: /tmp/example.go\n"})`,
+	} {
+		if paths := nestedPatchPaths(source); len(paths) != 0 {
+			t.Fatalf("nonliteral call yielded paths: %q: %#v", source, paths)
+		}
+	}
+}
+
+func TestNestedPatchRejectsForbiddenPaths(t *testing.T) {
+	alias := filepath.Join(retainedTestDir(t), "safe-alias")
+	if err := os.Symlink(filepath.Join(retainedTestDir(t), ".Trash", "missing"), alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/tmp/.TrAsH/blocked.go", "/tmp/.Trashes/blocked.go", filepath.Join(alias, "blocked.go")} {
+		source := "await tools.apply_patch(" + strconv.Quote("*** Update File: "+path+"\n") + ");"
+		if roots := opaqueCommandRootSnapshots(source, nil, ""); len(roots) != 0 {
+			t.Fatalf("forbidden patch selected roots: %q: %#v", path, roots)
+		}
+	}
+}
+
+func TestDeliveryRootIncrementPreservesFailedAttemptSnapshot(t *testing.T) {
+	t.Setenv("ONE_SHOT_STATE_DIR", retainedTestDir(t))
+	path, err := deliveryRootRegistryPath("snapshot-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the schema written by ship-it, independently of tally's struct.
+	data := `{"version":1,"session_id":"snapshot-session","roots":{"/failed":7,"/other":2},"attempts":{"/failed":{"turn_id":"failed-turn","generation":7,"snapshot":"failed-worktree-digest"}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordDeliveryRoots("snapshot-session", map[string]struct{}{"/other": {}}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := loadDeliveryRootRegistry(path, "snapshot-session")
+	if err != nil || registry.Roots["/other"] != 3 || registry.Roots["/failed"] != 7 {
+		t.Fatalf("registry = %#v, err=%v", registry, err)
+	}
+	if attempt := registry.Attempts["/failed"]; attempt.TurnID != "failed-turn" || attempt.Generation != 7 || attempt.Snapshot != "failed-worktree-digest" {
+		t.Fatalf("failed attempt changed: %#v", attempt)
+	}
+}
+
 func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) {
-	for _, shape := range []string{"direct", "wrapped", "freeform"} {
+	for _, shape := range []string{"direct", "direct-patch-phrase", "direct-command-phrase", "wrapped", "freeform"} {
 		t.Run(shape, func(t *testing.T) {
 			stateDir := retainedTestDir(t)
 			t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
@@ -25,10 +159,16 @@ func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) 
 			if err := os.WriteFile(unrelatedFile, []byte("package unrelated\nconst dirty = true\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			command := "python3 - <<'PY'\nfrom pathlib import Path\nPath('app.go').write_text('package changed\\n')\nPY"
+			contents := "package changed\n"
+			if shape == "direct-patch-phrase" {
+				contents += "// tools.apply_patch example\n"
+			} else if shape == "direct-command-phrase" {
+				contents += "// tools.exec_command example\n"
+			}
+			command := "python3 - <<'PY'\nfrom pathlib import Path\nPath('app.go').write_text(" + strconv.Quote(contents) + ")\nPY"
 			var input any = map[string]any{"cmd": command, "workdir": sibling}
 			tool := "Bash"
-			if shape != "direct" {
+			if !strings.HasPrefix(shape, "direct") {
 				source := "text((await tools.exec_command({cmd:" + strconv.Quote(command) + ",workdir:" + strconv.Quote(sibling) + ",yield_time_ms:1000,max_output_tokens:1600})).output);"
 				input = map[string]any{"cmd": source}
 				if shape == "freeform" {
@@ -37,7 +177,7 @@ func TestChildCommandWorkdirRegistersOnlyChangedRootForParentStop(t *testing.T) 
 			}
 			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
 				if eventName == "PostToolUse" {
-					if err := os.WriteFile(siblingFile, []byte("package changed\n"), 0o600); err != nil {
+					if err := os.WriteFile(siblingFile, []byte(contents), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}

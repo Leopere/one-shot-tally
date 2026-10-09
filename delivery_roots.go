@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,8 @@ var (
 	pythonPathExpressionRE = regexp.MustCompile(`(?:\bPath\(\s*['"]([^'"\r\n]+)['"]\s*\)|\bPath\.cwd\(\)|\b[A-Za-z_][A-Za-z_0-9]*)(?:\.parent)*(?:\s*/\s*['"][^'"\r\n]+['"])*`)
 	pythonPathAssignmentRE = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.*)$`)
 	pythonPathLiteralRE    = regexp.MustCompile(`['"]([^'"\r\n]+)['"]`)
+	javaScriptLiteralRE    = regexp.MustCompile("(?s)\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|`(?:[^`\\\\]|\\\\.)*`")
+	nestedPatchTokenRE     = regexp.MustCompile("(?s)//[^\r\n]*|/\\*.*?\\*/|" + javaScriptLiteralRE.String() + `|\btools\.apply_patch\s*\(` + "|[\"'`/]")
 )
 
 // deliveryRootRegistry is intentionally separate from per-turn tally state:
@@ -47,6 +50,7 @@ type deliveryRootRegistry struct {
 type deliveryRootAttempt struct {
 	TurnID     string `json:"turn_id"`
 	Generation uint64 `json:"generation"`
+	Snapshot   string `json:"snapshot,omitempty"`
 }
 
 func deliveryRootRegistryPath(sessionID string) (string, error) {
@@ -124,12 +128,13 @@ func opaqueCommandRootSnapshots(command string, input json.RawMessage, cwd strin
 		}
 	}
 	var workdir string
-	if json.Unmarshal(fields["workdir"], &workdir) != nil {
+	explicitWorkdir := json.Unmarshal(fields["workdir"], &workdir) == nil && workdir != ""
+	if !explicitWorkdir {
 		workdir = cwd
 	}
-	// The outer JavaScript is not the command. Decode each literal child cmd
-	// before reading Python paths; quoted examples and dynamic calls stay opaque.
-	if len(fields) != 0 && !strings.Contains(command, "tools.exec_command") {
+	// An explicit workdir remains attributable even when the command quotes tool
+	// names. JavaScript wrappers without one must use their literal child targets.
+	if explicitWorkdir || len(fields) != 0 && !strings.Contains(command, "tools.exec_command") && !strings.Contains(command, "tools.apply_patch") {
 		addCommand(command, workdir)
 	}
 	for _, object := range execCommandObjectRE.FindAllStringSubmatch(command, -1) {
@@ -143,6 +148,11 @@ func opaqueCommandRootSnapshots(command string, input json.RawMessage, cwd strin
 		}
 		addCommand(childCommand, childDirectory)
 	}
+	for _, path := range nestedPatchPaths(command) {
+		if root, ok := canonicalEditedRoot(path, cwd); ok {
+			roots[root] = struct{}{}
+		}
+	}
 	if len(roots) == 0 {
 		return nil
 	}
@@ -153,6 +163,74 @@ func opaqueCommandRootSnapshots(command string, input json.RawMessage, cwd strin
 		}
 	}
 	return snapshots
+}
+
+// Skip quoted examples and comments, accepting only a complete literal argument.
+// shortcut: regex/division syntax and template interpolation stay opaque; extend only for observed literal forms.
+func nestedPatchPaths(source string) []string {
+	var paths []string
+	for _, token := range nestedPatchTokenRE.FindAllStringIndex(source, -1) {
+		value := source[token[0]:token[1]]
+		if len(value) == 1 {
+			return nil // Unterminated literals or unsupported slash syntax.
+		}
+		if value[0] == '`' {
+			if _, ok := javaScriptPatchLiteral(value); !ok {
+				return nil
+			}
+		}
+		if !strings.HasPrefix(value, "tools.apply_patch") {
+			continue
+		}
+		prefix := strings.TrimSpace(source[:token[0]])
+		if strings.HasSuffix(prefix, ".") || strings.HasSuffix(prefix, "$") {
+			continue
+		}
+		argument := strings.TrimSpace(source[token[1]:])
+		literal := javaScriptLiteralRE.FindStringIndex(argument)
+		if literal == nil || literal[0] != 0 {
+			continue
+		}
+		rest := strings.TrimSpace(argument[literal[1]:])
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, ","))
+		if !strings.HasPrefix(rest, ")") {
+			continue
+		}
+		patch, ok := javaScriptPatchLiteral(argument[:literal[1]])
+		if !ok {
+			continue
+		}
+		encoded, _ := json.Marshal(patch)
+		paths = append(paths, explicitEditPaths("apply_patch", encoded)...)
+	}
+	return paths
+}
+
+func javaScriptPatchLiteral(literal string) (string, bool) {
+	if literal[0] == '"' {
+		var decoded string
+		err := json.Unmarshal([]byte(literal), &decoded)
+		return decoded, err == nil
+	}
+	quote, body := literal[0], literal[1:len(literal)-1]
+	var decoded strings.Builder
+	for body != "" {
+		if quote == '`' && strings.HasPrefix(body, "${") {
+			return "", false
+		}
+		if quote == '`' && (strings.HasPrefix(body, "\\`") || strings.HasPrefix(body, "\\$")) {
+			decoded.WriteByte(body[1])
+			body = body[2:]
+			continue
+		}
+		value, _, rest, err := strconv.UnquoteChar(body, quote)
+		if err != nil {
+			return "", false
+		}
+		decoded.WriteRune(value)
+		body = rest
+	}
+	return decoded.String(), true
 }
 
 // Resolve only literal Path expressions and earlier literal assignments. Never
