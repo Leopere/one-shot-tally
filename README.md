@@ -31,6 +31,7 @@ The base allowance is 30 weighted calls and three checks. Each accepted work ite
 - `PreToolUse` records calls and returns `{}`. It does not rewrite or approve a command.
 - `PostToolUse` records explicit structured results and normally returns `{}`. Recognized native browser startup errors add recovery guidance. Plain output text is not proof of success.
 - Native `DeliveryResult` events record the actual `ship-it` or `deploy-it` result.
+- Native command tracking includes literal Python paths and constant `Path` assignments outside the working repository. Only a changed repository enters the delivery queue; the hook does not scan neighbouring folders or run Python to discover paths.
 - Structured command metadata and native delivery receipts supply result evidence. Prose, quoted examples, printed markers, and JSON printed in command stdout cannot prove success. Native receipts use a cooperating local executable protocol, not an authenticated remote service.
 - Some Codex command hooks supply stdout without an exit status. Those results remain unknown. Native delivery reports its result directly after the repository command returns. A successful receipt must match a clean current checkout before it clears incomplete delivery.
 - Unresolved results persist by session and project across turns. The first terminal blocker claim that is observed at `Stop` gets one bounded `decision:block` response that asks for fact checking and recovery.

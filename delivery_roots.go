@@ -27,8 +27,11 @@ var (
 	pythonPathJoinRE = regexp.MustCompile(`(?s)\bPath\(\s*['\"](/[^'\"\r\n]*)['\"]\s*\)\s*/\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*['\"]([^/'\"\r\n]+)['\"]\s*\)`)
 	// Native code-mode hooks wrap exec_command in JavaScript. Accept only a
 	// literal argument object; never evaluate an expression to discover roots.
-	execCommandObjectRE = regexp.MustCompile(`\btools\.exec_command\s*\(\s*\{((?:\s*(?:"(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z_0-9]*)\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?[0-9]+|true|false|null)\s*,?)+)\}\s*\)`)
-	execCommandFieldRE  = regexp.MustCompile(`("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z_0-9]*)\s*:\s*("(?:[^"\\]|\\.)*"|-?[0-9]+|true|false|null)`)
+	execCommandObjectRE    = regexp.MustCompile(`\btools\.exec_command\s*\(\s*\{((?:\s*(?:"(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z_0-9]*)\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?[0-9]+|true|false|null)\s*,?)+)\}\s*\)`)
+	execCommandFieldRE     = regexp.MustCompile(`("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z_0-9]*)\s*:\s*("(?:[^"\\]|\\.)*"|-?[0-9]+|true|false|null)`)
+	pythonPathExpressionRE = regexp.MustCompile(`(?:\bPath\(\s*['"]([^'"\r\n]+)['"]\s*\)|\bPath\.cwd\(\)|\b[A-Za-z_][A-Za-z_0-9]*)(?:\.parent)*(?:\s*/\s*['"][^'"\r\n]+['"])*`)
+	pythonPathAssignmentRE = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.*)$`)
+	pythonPathLiteralRE    = regexp.MustCompile(`['"]([^'"\r\n]+)['"]`)
 )
 
 // deliveryRootRegistry is intentionally separate from per-turn tally state:
@@ -105,25 +108,40 @@ func recordDeliveryRoots(sessionID string, roots map[string]struct{}) error {
 // snapshots for explicit execution directories and finite Python loop targets.
 // It deliberately does not walk a parent directory. A root is recorded only
 // when its worktree actually changes between the native pre/post tool events.
-func opaqueCommandRootSnapshots(command string, input json.RawMessage) map[string]string {
-	roots := pythonFiniteLoopRoots(command)
+func opaqueCommandRootSnapshots(command string, input json.RawMessage, cwd string) map[string]string {
+	roots := map[string]struct{}{}
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(input, &fields)
-	addWorkdir := func(raw json.RawMessage) {
-		var path string
-		if json.Unmarshal(raw, &path) == nil {
-			if root, ok := canonicalCommandRoot(path); ok {
-				roots[root] = struct{}{}
-			}
+	addCommand := func(command, directory string) {
+		if root, ok := canonicalCommandRoot(directory); ok {
+			roots[root] = struct{}{}
+		}
+		for root := range pythonFiniteLoopRoots(command) {
+			roots[root] = struct{}{}
+		}
+		for root := range pythonStaticPathRoots(command, directory) {
+			roots[root] = struct{}{}
 		}
 	}
-	addWorkdir(fields["workdir"])
+	var workdir string
+	if json.Unmarshal(fields["workdir"], &workdir) != nil {
+		workdir = cwd
+	}
+	// The outer JavaScript is not the command. Decode each literal child cmd
+	// before reading Python paths; quoted examples and dynamic calls stay opaque.
+	if len(fields) != 0 && !strings.Contains(command, "tools.exec_command") {
+		addCommand(command, workdir)
+	}
 	for _, object := range execCommandObjectRE.FindAllStringSubmatch(command, -1) {
+		childCommand, childDirectory := "", cwd
 		for _, field := range execCommandFieldRE.FindAllStringSubmatch(object[1], -1) {
 			if field[1] == "workdir" || field[1] == `"workdir"` {
-				addWorkdir(json.RawMessage(field[2]))
+				_ = json.Unmarshal([]byte(field[2]), &childDirectory)
+			} else if field[1] == "cmd" || field[1] == `"cmd"` {
+				_ = json.Unmarshal([]byte(field[2]), &childCommand)
 			}
 		}
+		addCommand(childCommand, childDirectory)
 	}
 	if len(roots) == 0 {
 		return nil
@@ -135,6 +153,65 @@ func opaqueCommandRootSnapshots(command string, input json.RawMessage) map[strin
 		}
 	}
 	return snapshots
+}
+
+// Resolve only literal Path expressions and earlier literal assignments. Never
+// execute Python or discover sibling repositories by walking their parent.
+func pythonStaticPathRoots(command, cwd string) map[string]struct{} {
+	roots, bindings := map[string]struct{}{}, map[string]string{}
+	resolve := func(expression string) (string, bool) {
+		match := pythonPathExpressionRE.FindString(expression)
+		if match == "" || match != strings.TrimSpace(expression) {
+			return "", false
+		}
+		path, rest := "", ""
+		switch {
+		case strings.HasPrefix(match, "Path.cwd()"):
+			path, rest = cwd, strings.TrimPrefix(match, "Path.cwd()")
+		case strings.HasPrefix(match, "Path("):
+			literal := pythonPathLiteralRE.FindStringSubmatch(match)
+			if len(literal) != 2 || strings.ContainsAny(literal[1], "\\{}") {
+				return "", false
+			}
+			path = literal[1]
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(cwd, path)
+			}
+			rest = match[strings.Index(match, ")")+1:]
+		default:
+			name := strings.FieldsFunc(match, func(r rune) bool { return r == '.' || r == '/' || r == ' ' || r == '\t' })[0]
+			path, rest = bindings[name], strings.TrimPrefix(match, name)
+		}
+		if path == "" || !filepath.IsAbs(path) {
+			return "", false
+		}
+		for strings.HasPrefix(rest, ".parent") {
+			path, rest = filepath.Dir(path), strings.TrimPrefix(rest, ".parent")
+		}
+		for _, literal := range pythonPathLiteralRE.FindAllStringSubmatch(rest, -1) {
+			if strings.ContainsAny(literal[1], "\\{}") || filepath.IsAbs(literal[1]) {
+				return "", false
+			}
+			path = filepath.Join(path, literal[1])
+		}
+		return path, true
+	}
+	for _, line := range strings.Split(command, "\n") {
+		if assignment := pythonPathAssignmentRE.FindStringSubmatch(line); len(assignment) == 3 {
+			delete(bindings, assignment[1])
+			if path, ok := resolve(assignment[2]); ok {
+				bindings[assignment[1]] = path
+			}
+		}
+		for _, expression := range pythonPathExpressionRE.FindAllString(line, -1) {
+			if path, ok := resolve(expression); ok {
+				if root, ok := canonicalCommandRoot(path); ok {
+					roots[root] = struct{}{}
+				}
+			}
+		}
+	}
+	return roots
 }
 
 func recordChangedOpaqueCommandRoots(sessionID string, before map[string]string) error {

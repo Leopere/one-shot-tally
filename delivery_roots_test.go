@@ -84,8 +84,73 @@ func TestCommandWorkdirRejectsDynamicAndForbiddenRoots(t *testing.T) {
 		`tools.exec_command({cmd:"python3 mutate.py",workdir:"/tmp/.Trashes/blocked"})`,
 		`console.log(` + strconv.Quote(`tools.exec_command({cmd:"mutate",workdir:`+strconv.Quote(repo)+`})`) + `)`,
 	} {
-		if roots := opaqueCommandRootSnapshots(command, nil); len(roots) != 0 {
+		if roots := opaqueCommandRootSnapshots(command, nil, ""); len(roots) != 0 {
 			t.Fatalf("unsupported command selected roots: %q: %#v", command, roots)
+		}
+	}
+}
+
+func TestPythonLiteralPathsRegisterOnlyChangedExternalRepository(t *testing.T) {
+	for _, shape := range []string{"relative", "literal-parent", "cwd-parent", "wrapped"} {
+		t.Run(shape, func(t *testing.T) {
+			stateDir := retainedTestDir(t)
+			t.Setenv("ONE_SHOT_STATE_DIR", stateDir)
+			parent, err := filepath.EvalSymlinks(retainedTestDir(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			driver := filepath.Join(parent, "boost-boompay-ca")
+			target := filepath.Join(parent, "boompay-vps-infra-l2")
+			unchanged := filepath.Join(parent, "jenkins-local")
+			unrelated := filepath.Join(parent, "unrelated")
+			committedNamedTestRepo(t, driver, "package driver\n")
+			targetFile := committedNamedTestRepo(t, target, "package target\n")
+			committedNamedTestRepo(t, unchanged, "package unchanged\n")
+			unrelatedFile := committedNamedTestRepo(t, unrelated, "package unrelated\n")
+			if err := os.WriteFile(unrelatedFile, []byte("package unrelated\nconst dirty = true\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			python := "Path('../boompay-vps-infra-l2/app.go').write_text('changed')\nPath('../jenkins-local/app.go').read_text()"
+			if shape != "relative" {
+				base := "Path(" + strconv.Quote(parent) + ")"
+				if shape != "literal-parent" {
+					base = "Path.cwd().parent"
+				}
+				python = "base=" + base + "\ncontroller=base/'boompay-vps-infra-l2/app.go'\ncontroller.write_text('changed')\n(base/'jenkins-local/app.go').read_text()"
+			}
+			command := "python3 - <<'PY'\nfrom pathlib import Path\n" + python + "\nPY"
+			tool, input := "exec_command", any(map[string]any{"cmd": command})
+			if shape == "wrapped" {
+				tool, input = "functions.exec", "text(await tools.exec_command({cmd:"+strconv.Quote(command)+"}));"
+			}
+			for _, eventName := range []string{"PreToolUse", "PostToolUse"} {
+				if eventName == "PostToolUse" {
+					if err := os.WriteFile(targetFile, []byte("package changed\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				hook(t, stateDir, map[string]any{
+					"session_id": "literal-paths", "turn_id": "turn", "hook_event_name": eventName,
+					"tool_name": tool, "tool_use_id": "external-edit", "cwd": driver,
+					"tool_input": input, "tool_response": map[string]any{"exit_code": 0},
+				})
+			}
+			registryPath, err := deliveryRootRegistryPath("literal-paths")
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry, err := loadDeliveryRootRegistry(registryPath, "literal-paths")
+			if err != nil || len(registry.Roots) != 1 || registry.Roots[target] != 1 {
+				t.Fatalf("registered roots = %#v, err=%v; want only changed target", registry.Roots, err)
+			}
+		})
+	}
+}
+
+func TestPythonStaticPathsIgnoreBlankAndDynamicAssignments(t *testing.T) {
+	for _, command := range []string{"x = ", "x =", "x = unknown()\nx/'other/app.go'", "x = Path.cwd() + suffix\nx/'other/app.go'"} {
+		if roots := pythonStaticPathRoots(command, ""); len(roots) != 0 {
+			t.Fatalf("unsupported assignment selected roots: %q: %#v", command, roots)
 		}
 	}
 }

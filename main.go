@@ -599,7 +599,7 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	commandRootSnapshots := map[string]string(nil)
 	if isOpaqueMutation {
-		commandRootSnapshots = opaqueCommandRootSnapshots(command, e.ToolInput)
+		commandRootSnapshots = opaqueCommandRootSnapshots(command, e.ToolInput, e.CWD)
 	}
 	if e.ToolUseID != "" {
 		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, BrowserLaunch: isBrowserLaunch, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, OpaqueMutation: isOpaqueMutation, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, CommandRootSnapshots: commandRootSnapshots, WorkingDirectory: e.CWD, Sequence: s.TotalCalls, OperationKey: operationKey, OperationKind: operationKind}
