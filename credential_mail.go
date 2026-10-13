@@ -103,7 +103,7 @@ type credentialSendDependencies struct {
 type credentialReceiveDependencies struct {
 	now      func() time.Time
 	stateDir func() (string, error)
-	deliver  func([]byte) (bool, error)
+	deliver  func(context.Context, []byte) (bool, error)
 }
 
 type credentialMessageMetadata struct {
@@ -158,7 +158,7 @@ func credentialCommand(args []string, r io.Reader, w io.Writer) error {
 		return credentialReceive(args[1:], r, w, credentialReceiveDependencies{
 			now: time.Now,
 			stateDir: func() (string, error) {
-				return secureCredentialDirectory(credentialReceiverStateDir)
+				return credentialReceiverStateDir, nil
 			},
 			deliver: deliverCredentialSendmail,
 		})
@@ -284,81 +284,6 @@ func credentialSend(args []string, r io.Reader, w io.Writer, deps credentialSend
 	fmt.Fprintf(w, "submitted %s to %s; signed by %s and encrypted to the current validated WKD key\n", operationID, credentialRecipient, credentialSigningFingerprint)
 	fmt.Fprintf(w, "metadata-only receipt: %s\n", receiptPath)
 	fmt.Fprintln(w, "Reminder: rotate consequential credentials after they have served their purpose.")
-	return nil
-}
-
-func credentialReceive(args []string, r io.Reader, w io.Writer, deps credentialReceiveDependencies) error {
-	if len(args) != 0 {
-		return errors.New("usage: one-shot-tally credential receive")
-	}
-	wire, err := readCredentialInput(r, credentialWireLimit, "encrypted credential message")
-	if err != nil {
-		return err
-	}
-	metadata, err := validateCredentialMessage(wire)
-	if err != nil {
-		return fmt.Errorf("reject encrypted credential message: %w", err)
-	}
-	dir, err := deps.stateDir()
-	if err != nil {
-		return errors.New("prepare receiver receipt store")
-	}
-	receiptPath := filepath.Join(dir, metadata.OperationID+".json")
-	unlock, err := acquireCredentialOperationLock(receiptPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unlock() }()
-	if existing, found, err := loadCredentialReceipt(receiptPath); err != nil {
-		return errors.New("read receiver receipt")
-	} else if found {
-		if existing.OperationID == metadata.OperationID && existing.CiphertextSHA256 == metadata.Hash && existing.State == "submitted" {
-			fmt.Fprintf(w, "submitted: %s\n", metadata.OperationID)
-			return nil
-		}
-		return &credentialExitError{message: "operation already exists in a non-final state; no delivery was attempted", code: 3}
-	}
-	now := deps.now().UTC()
-	receipt := credentialReceipt{
-		OperationID:        metadata.OperationID,
-		MessageID:          metadata.MessageID,
-		State:              "pending",
-		Sender:             credentialSender,
-		Recipient:          credentialRecipient,
-		Channel:            credentialChannel,
-		SigningFingerprint: credentialSigningFingerprint,
-		CiphertextSHA256:   metadata.Hash,
-		CiphertextBytes:    len(metadata.Ciphertext),
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}
-	if err := saveCredentialReceipt(receiptPath, receipt); err != nil {
-		return errors.New("record pending receiver receipt")
-	}
-	started, deliveryErr := deps.deliver(wire)
-	if deliveryErr != nil {
-		if started {
-			receipt.State = "unknown"
-			receipt.Failure = "sendmail_outcome_unknown"
-		} else {
-			receipt.State = "failed"
-			receipt.Failure = "sendmail_not_started"
-		}
-		receipt.UpdatedAt = deps.now().UTC()
-		if saveErr := saveCredentialReceipt(receiptPath, receipt); saveErr != nil {
-			return &credentialExitError{message: "receiver outcome is unknown and its receipt could not be finalized", code: 3}
-		}
-		if started {
-			return &credentialExitError{message: "receiver delivery outcome is unknown; no automatic retry was attempted", code: 3}
-		}
-		return &credentialExitError{message: "receiver did not start sendmail; no delivery was attempted", code: 1}
-	}
-	receipt.State = "submitted"
-	receipt.UpdatedAt = deps.now().UTC()
-	if err := saveCredentialReceipt(receiptPath, receipt); err != nil {
-		return &credentialExitError{message: "receiver submitted the message, but its receipt could not be finalized", code: 3}
-	}
-	fmt.Fprintf(w, "submitted: %s\n", metadata.OperationID)
 	return nil
 }
 
@@ -1087,17 +1012,6 @@ func submitCredentialSSH(wire []byte, operationID string) error {
 		return &credentialTransportError{state: "unknown", reason: "ssh_response_unknown", message: "SSH credential delivery confirmation is invalid; no automatic retry was attempted", code: 3}
 	}
 	return nil
-}
-
-func deliverCredentialSendmail(wire []byte) (bool, error) {
-	command := exec.Command("/usr/sbin/sendmail", credentialSendmailArguments()...)
-	command.Stdin = bytes.NewReader(wire)
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
-	if err := command.Start(); err != nil {
-		return false, err
-	}
-	return true, command.Wait()
 }
 
 func credentialSSHArguments(home string) (string, string, []string) {

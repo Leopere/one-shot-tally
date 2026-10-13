@@ -1,0 +1,23 @@
+{
+  "schema": "one-shot-receiver-delivery/v1",
+  "source_repository": "Leopere/one-shot-tally",
+  "source_ref": "refs/heads/main",
+  "jenkins_job": "deploy-one-shot-receiver",
+  "controller_repository": "Leopere/jenkins-local",
+  "target": "box.p.nixc.us",
+  "platform": "linux/amd64",
+  "artifact": "/usr/local/libexec/miab-credential-receiver",
+  "receipt_store": "/var/lib/one-shot-tally-openpgp-mail",
+  "launcher": "/usr/local/sbin/miab-credential-receive",
+  "runtime_user": "miab-credential-mail",
+  "ssh_entry": "existing-root-forced-key-compatibility",
+  "activation_requirements": [
+    "exact_published_main_revision_and_artifact_digest",
+    "isolated_linux_tests_and_postfix_submission",
+    "preserve_existing_receipt_bytes_and_operation_identifiers",
+    "dedicated_user_without_supplementary_groups_or_capabilities",
+    "whole_cgroup_deadline_and_aggregate_resource_limits",
+    "quiesced_migration_and_journaled_rollback",
+    "independent_live_acceptance"
+  ]
+}

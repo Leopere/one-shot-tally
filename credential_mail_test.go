@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -474,6 +476,9 @@ func TestCredentialSendRejectsOversizeBeforeEncryptionOrTransport(t *testing.T) 
 }
 
 func TestCredentialReceiverSubmitsOnceAndDeduplicates(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("production receiver requires Linux")
+	}
 	now := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
 	secret := []byte("receiver-dedupe-sentinel")
 	inner, err := buildCredentialInnerEntity(secret)
@@ -488,14 +493,14 @@ func TestCredentialReceiverSubmitsOnceAndDeduplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(retainedTestDir(t), "receiver")
+	stateDir := credentialReceiverTestDirectory(t)
 	deliveryCalls := 0
 	deps := credentialReceiveDependencies{
 		now: func() time.Time { return now },
 		stateDir: func() (string, error) {
 			return secureCredentialDirectory(stateDir)
 		},
-		deliver: func(message []byte) (bool, error) {
+		deliver: func(_ context.Context, message []byte) (bool, error) {
 			deliveryCalls++
 			if !bytes.Equal(message, wire) || bytes.Contains(message, secret) {
 				t.Fatal("receiver did not pass the exact ciphertext-only message")
