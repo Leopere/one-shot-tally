@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const binaryVersion = "1.22.0"
+const binaryVersion = "1.23.0"
 
 var (
 	// Test runners must begin a shell command segment. Matching a bare "test"
@@ -52,6 +52,7 @@ type event struct {
 	StopHookActive    bool            `json:"stop_hook_active"`
 	LastAssistantMsg  string          `json:"last_assistant_message"`
 	Prompt            string          `json:"prompt"`
+	Model             string          `json:"model"`
 	CWD               string          `json:"cwd"`
 	DeliveryKind      string          `json:"delivery_kind,omitempty"`
 	DeliveryStatus    string          `json:"delivery_status,omitempty"`
@@ -94,6 +95,7 @@ type state struct {
 	TotalCalls                   int                    `json:"total_calls"`
 	CallCostUnits                int                    `json:"call_cost_units"`
 	SparkCalls                   int                    `json:"spark_calls"`
+	ModelCalls                   map[string]int         `json:"model_calls,omitempty"`
 	Tests                        int                    `json:"tests"`
 	TestPasses                   int                    `json:"test_passes"`
 	TestFailures                 int                    `json:"test_failures"`
@@ -278,6 +280,10 @@ func main() {
 }
 
 func runHookFailOpen(r io.Reader, w, diagnostics io.Writer) {
+	if hooksPaused() {
+		_ = writeJSON(w, hookOutput{})
+		return
+	}
 	if err := runHook(r, w); err != nil {
 		fmt.Fprintln(diagnostics, "one-shot-tally: bookkeeping failed; tool use continues:", err)
 		_ = writeJSON(w, hookOutput{})
@@ -478,6 +484,9 @@ func preToolUse(e event, w io.Writer) error {
 		s.GoalScoped = true
 	}
 	command := commandFrom(e.ToolInput)
+	if model := strings.TrimSpace(e.Model); model != "" {
+		s.ModelCalls[model]++
+	}
 	if strings.Contains(strings.ToLower(e.ToolName), "write_stdin") {
 		if pending, ok := s.Running[inputExecutionSession(e.ToolInput)]; ok {
 			delete(s.Running, inputExecutionSession(e.ToolInput))
@@ -518,13 +527,9 @@ func preToolUse(e event, w io.Writer) error {
 	isOpaqueMutation := isCommand && !isRead && !isTest && !isPassiveWait && !isBackgroundRecord && !isBackgroundComplete && !isTodoAdd && !isTodoDone && !isShipping && !isDeploying && !gitCommitRE.MatchString(command)
 
 	s.TotalCalls++
-	callUnits := 4
-	sparkCall := isSparkCall(e)
-	if sparkCall {
-		callUnits = 1
-		s.SparkCalls++
-	}
-	s.CallCostUnits += callUnits
+	// Count work consistently across models and legacy role names. This is an
+	// activity measure, not a token-price or quota estimate.
+	s.CallCostUnits += 4
 	s.ToolCounts[e.ToolName]++
 	fp := fingerprint(e.ToolName, e.ToolInput)
 	s.Fingerprints[fp]++
@@ -563,8 +568,9 @@ func preToolUse(e event, w io.Writer) error {
 	repeatedTest := false
 	if isTest {
 		s.Tests++
-		s.TestFingerprints[fp]++
-		repeatedTest = s.TestFingerprints[fp] > 1
+		testKey := fmt.Sprintf("%s:%d:%s", e.CWD, s.Revision, fp)
+		s.TestFingerprints[testKey]++
+		repeatedTest = s.TestFingerprints[testKey] > 1
 	}
 	if isPassiveWait {
 		s.PassiveWaits++
@@ -937,8 +943,7 @@ func outcomeAdvisory(outcome string) string {
 }
 
 func isAgentSpawn(tool string) bool {
-	tool = strings.ToLower(tool)
-	return strings.Contains(tool, "spawn_agent") || strings.Contains(tool, "task") && strings.Contains(tool, "agent")
+	return oneOf(normalizedToolName(tool), "spawnagent", "agent", "collaborationspawnagent")
 }
 
 func agentTaskKey(e event) string {
@@ -961,7 +966,19 @@ func reportLine(s state) string {
 	if !hasRecordedActivity(s) {
 		score = "N/A (no observed work)"
 	}
-	report := fmt.Sprintf("Recorded outcome: %s\nMode: %s\nTool calls: %d total; %d Spark; %s weighted; %d allowed\nChecks: %d total; %d passed; %d failed; %d unknown; %d allowed; %s elapsed; %s repeated\nWork items: %d planned; %d completed; %d open; %d add attempts; %d repeated adds; %d failed adds; %d unknown adds\nDelegation: %d calls; %d distinct tasks; %d Spark; %d repeated calls\nDelivery: %d completed; %d shipped; %d deployed\nBackground: %d recorded; %d completed; %d passive waits\nActivity score: %s", recordedOutcome(s), mode, s.TotalCalls, s.SparkCalls, formatCallUnits(s.CallCostUnits), callAllowance, s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), checkAllowance, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), planItems(s), planCompleted(s), openTodos(s), planAddAttempts(s), planRepeatedAdds(s), s.TodoAddFailures, s.TodoAddUnknown, s.AgentCalls, s.DistinctAgentTasks, s.SparkCalls, s.RepeatedAgentCalls, s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, score)
+	report := fmt.Sprintf("Recorded outcome: %s\nMode: %s\nTool calls: %d total; %s weighted; %d allowed\nChecks: %d total; %d passed; %d failed; %d unknown; %d allowed; %s elapsed; %s repeated\nWork items: %d planned; %d completed; %d open; %d add attempts; %d repeated adds; %d failed adds; %d unknown adds\nDelegation: %d calls; %d distinct tasks; %d repeated calls\nDelivery: %d completed; %d shipped; %d deployed\nBackground: %d recorded; %d completed; %d passive waits\nActivity score: %s", recordedOutcome(s), mode, s.TotalCalls, formatCallUnits(s.CallCostUnits), callAllowance, s.Tests, s.TestPasses, s.TestFailures, unknownTests(s), checkAllowance, formatMillis(s.TotalTestMillis), formatMillis(s.RedundantTestMillis), planItems(s), planCompleted(s), openTodos(s), planAddAttempts(s), planRepeatedAdds(s), s.TodoAddFailures, s.TodoAddUnknown, s.AgentCalls, s.DistinctAgentTasks, s.RepeatedAgentCalls, s.ProductionCompletions, s.ShipCompletions, s.DeployCompletions, s.BackgroundRecords, s.BackgroundCompletions, s.PassiveWaits, score)
+	if len(s.ModelCalls) > 0 {
+		models := make([]string, 0, len(s.ModelCalls))
+		for model := range s.ModelCalls {
+			models = append(models, model)
+		}
+		sort.Strings(models)
+		labels := make([]string, 0, len(models))
+		for _, model := range models {
+			labels = append(labels, fmt.Sprintf("%s: %d", model, s.ModelCalls[model]))
+		}
+		report += "\nObserved models: " + strings.Join(labels, "; ")
+	}
 	if review := blockerReport(s); review != "" {
 		report += "\n" + review
 	}
@@ -993,8 +1010,6 @@ func numericScore(s state) int {
 		score -= 20
 	case testExcess == 1:
 		score -= 10
-	case tests == 1 && s.Revision > 0:
-		score -= 8
 	}
 	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
@@ -1372,7 +1387,8 @@ func gitWorktreeSnapshot(cwd string) (string, bool) {
 
 func passiveWait(e event, command string) bool {
 	tool := strings.ToLower(e.ToolName)
-	if strings.Contains(tool, "wait_agent") {
+	// These are supported continuations, not evidence of a busy polling loop.
+	if normalizedToolName(tool) == "wait" || strings.Contains(tool, "wait_agent") {
 		return false
 	}
 	if strings.Contains(tool, "wait") {
@@ -1602,13 +1618,32 @@ func normalizeState(s *state) {
 	if s.StateVersion < 5 {
 		s.StateVersion = 5
 	}
+	if s.StateVersion < 6 {
+		// Retain historical Spark counts for old state readers, but remove the
+		// role-name discount and revision-blind repetition history.
+		s.CallCostUnits = s.TotalCalls * 4
+		s.TestFingerprints = map[string]int{}
+		s.RedundantTestMillis = 0
+		for id, call := range s.Pending {
+			call.RepeatedTest = false
+			s.Pending[id] = call
+		}
+		for id, call := range s.Running {
+			call.RepeatedTest = false
+			s.Running[id] = call
+		}
+		s.StateVersion = 6
+	}
+	if s.ModelCalls == nil {
+		s.ModelCalls = map[string]int{}
+	}
 	if s.CallCostUnits == 0 && s.TotalCalls > 0 {
 		s.CallCostUnits = s.TotalCalls * 4
 	}
 }
 
 func emptyState(sessionID, turnID string) state {
-	return state{StateVersion: 5, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, TodoFingerprints: map[string]int{}, AgentFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
+	return state{StateVersion: 6, SessionID: sessionID, TurnID: turnID, ToolCounts: map[string]int{}, ModelCalls: map[string]int{}, Fingerprints: map[string]int{}, TestFingerprints: map[string]int{}, TodoFingerprints: map[string]int{}, AgentFingerprints: map[string]int{}, Pending: map[string]pendingCall{}}
 }
 
 func decodeState(b []byte, s *state) (bool, error) {
@@ -1653,36 +1688,7 @@ func save(path string, s state) error {
 }
 
 func acquireStateLock(path string) (func() error, error) {
-	lockPath := path + ".lock"
-	deadline := time.Now().Add(1500 * time.Millisecond)
-	for {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			token := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
-			if _, err := f.WriteString(token); err != nil {
-				_ = f.Close()
-				_ = os.Remove(lockPath)
-				return nil, err
-			}
-			if err := f.Close(); err != nil {
-				_ = os.Remove(lockPath)
-				return nil, err
-			}
-			return func() error { return removeOwnedLock(lockPath, token) }, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		info, statErr := os.Stat(lockPath)
-		if statErr == nil && time.Since(info.ModTime()) > time.Second {
-			_ = os.Remove(lockPath)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for state lock: %s", filepath.Base(path))
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	return acquireFileLock(path, "state")
 }
 
 func removeOwnedLock(path, token string) error {
@@ -1940,22 +1946,6 @@ func codexGoalsPath() (string, error) {
 		return "", fmt.Errorf("Codex goals database is unavailable: %w", err)
 	}
 	return path, nil
-}
-
-func isSparkCall(e event) bool {
-	if !isAgentSpawn(e.ToolName) {
-		return false
-	}
-	var fields map[string]any
-	if json.Unmarshal(e.ToolInput, &fields) != nil {
-		return false
-	}
-	for _, key := range []string{"agent_type", "model", "subagent_type"} {
-		if value, ok := fields[key].(string); ok && strings.Contains(strings.ToLower(value), "spark") {
-			return true
-		}
-	}
-	return false
 }
 
 func standaloneTrackedCommand(command string, pattern *regexp.Regexp) bool {
@@ -2442,9 +2432,12 @@ func printLatestTo(w io.Writer, asJSON bool) error {
 			activityScore = numericScore(s)
 		}
 		callAllowance, checkAllowance := workloadAllowance(s)
-		return writeJSON(w, map[string]any{"state": s, "outcome": recordedOutcome(s), "verified": finalPassed(s), "outcome_grade": outcomeScore(s), "activity_score": activityScore, "call_allowance": callAllowance, "check_allowance": checkAllowance, "report": reportLine(s), "lifetime": life})
+		return writeJSON(w, map[string]any{"state": s, "hooks_paused": hooksPaused(), "outcome": recordedOutcome(s), "verified": finalPassed(s), "outcome_grade": outcomeScore(s), "activity_score": activityScore, "call_allowance": callAllowance, "check_allowance": checkAllowance, "report": reportLine(s), "lifetime": life})
 	}
 	fmt.Fprintln(w, reportLine(s))
+	if hooksPaused() {
+		fmt.Fprintln(w, "Hooks: PAUSED; this report contains saved activity.")
+	}
 	if life.Runs > 0 {
 		fmt.Fprintf(w, "\nLifetime\nVerified revisions since 1.12: %d\nVerified runs: %d of %d\nAverage activity score: %.1f/100\nChecks: %d total; %d failed; %s elapsed\nTool calls: %d\n", life.RevisionVerifiedRuns, life.VerifiedRuns, life.Runs, life.AverageScore, life.TotalTests, life.TotalTestFailures, formatMillis(life.TotalTestMillis), life.TotalToolCalls)
 	}

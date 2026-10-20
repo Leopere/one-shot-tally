@@ -17,7 +17,7 @@ func TestTallyOnlyInstallerMode(t *testing.T) {
 	for _, want := range []string{
 		"[ \"$1\" = \"--tally-only\" ]",
 		"install_mode=tally-only",
-		"one-shot-tally 1.22.0 | ColinKnapp.com",
+		"one-shot-tally 1.23.0 | ColinKnapp.com",
 		"if [ \"$install_mode\" = tally-only ]; then",
 	} {
 		if !strings.Contains(script, want) {

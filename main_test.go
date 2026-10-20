@@ -31,6 +31,7 @@ func hook(t *testing.T, dir string, input map[string]any) map[string]any {
 }
 
 func TestHookBookkeepingFailureDoesNotBreakToolUse(t *testing.T) {
+	t.Setenv("HOME", retainedTestDir(t))
 	statePath := filepath.Join(retainedTestDir(t), "not-a-directory")
 	if err := os.WriteFile(statePath, []byte("occupied"), 0o600); err != nil {
 		t.Fatal(err)
@@ -495,7 +496,7 @@ func TestLegacyStateDoesNotInferProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.StateVersion != 5 || recordedOutcome(loaded) != outcomeActivity || finalPassed(loaded) {
+	if loaded.StateVersion != 6 || recordedOutcome(loaded) != outcomeActivity || finalPassed(loaded) {
 		t.Fatalf("legacy state inferred progress: %#v", loaded)
 	}
 }
@@ -520,7 +521,7 @@ func TestStatusMigratesLegacyStateAndOmitsSuccessAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	statusState, ok := report["state"].(map[string]any)
-	if !ok || statusState["state_version"] != float64(5) {
+	if !ok || statusState["state_version"] != float64(6) {
 		t.Fatalf("legacy status was not normalized: %#v", report)
 	}
 	if _, exists := report["success"]; exists {
@@ -681,7 +682,7 @@ func assertEmptyHookOutput(t *testing.T, output map[string]any) {
 	}
 }
 
-func TestSparkCallsAreDiscounted(t *testing.T) {
+func TestLegacyWorkerNamesDoNotDiscountCalls(t *testing.T) {
 	dir := retainedTestDir(t)
 	for i := 0; i < 8; i++ {
 		hook(t, dir, map[string]any{"session_id": "s", "turn_id": "spark", "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_use_id": fmt.Sprintf("spark-%d", i), "tool_input": map[string]any{"agent_type": "spark_worker", "task_name": fmt.Sprintf("bounded-%d", i)}})
@@ -693,14 +694,14 @@ func TestSparkCallsAreDiscounted(t *testing.T) {
 	b, _ := os.ReadFile(files[0])
 	var s state
 	_ = json.Unmarshal(b, &s)
-	if s.TotalCalls != 37 || s.SparkCalls != 8 || s.CallCostUnits != 124 {
-		t.Fatalf("unexpected Spark accounting: %#v", s)
+	if s.TotalCalls != 37 || s.SparkCalls != 0 || s.CallCostUnits != 148 {
+		t.Fatalf("unexpected call accounting: %#v", s)
 	}
-	if got := numericScore(s); got != 100 {
-		t.Fatalf("discounted score = %d, want 100", got)
+	if got := numericScore(s); got != 99 {
+		t.Fatalf("activity score = %d, want 99", got)
 	}
-	if report := reportLine(s); !strings.Contains(report, "8 Spark; 31 weighted") {
-		t.Fatalf("report omits Spark discount: %q", report)
+	if report := reportLine(s); !strings.Contains(report, "37 total; 37 weighted") || strings.Contains(report, "Spark") {
+		t.Fatalf("report retains model discount: %q", report)
 	}
 }
 
@@ -720,7 +721,7 @@ func TestHelpDocumentsGoalResumeWithoutPolicyDump(t *testing.T) {
 func TestVersionCreditsColinKnapp(t *testing.T) {
 	var out bytes.Buffer
 	printVersion(&out)
-	for _, want := range []string{"one-shot-tally 1.22.0", "ColinKnapp.com"} {
+	for _, want := range []string{"one-shot-tally " + binaryVersion, "ColinKnapp.com"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("version missing %q: %s", want, out.String())
 		}
@@ -813,7 +814,7 @@ func TestInstallerPrintsColinKnapp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"one-shot-tally 1.22.0 | ColinKnapp.com", "one-shot-tally: production install verified"} {
+	for _, want := range []string{"one-shot-tally " + binaryVersion + " | ColinKnapp.com", "one-shot-tally: production install verified"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("install output misses %q: %s", want, out)
 		}
@@ -1012,7 +1013,7 @@ func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
 		t.Fatalf("record misclassified as wait: %#v", record)
 	}
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "record", "tool_response": map[string]any{"exit_code": 0}})
-	wait := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "wait", "tool_use_id": "wait", "tool_input": map[string]any{}})
+	wait := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "wait", "tool_input": map[string]any{"command": "sleep 30"}})
 	assertEmptyHookOutput(t, wait)
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	b, _ := os.ReadFile(files[0])
@@ -1775,16 +1776,16 @@ func TestTodoLifecycleIsDurableAndDeduplicated(t *testing.T) {
 
 func TestWorkloadAllowanceRewardsCompletionNotInflation(t *testing.T) {
 	verified := state{Revision: 1, LastEditResultKnown: true, LastEditSucceeded: true, LastEditResultRevision: 1, VerifiedRevision: 1, Tests: 1, TestPasses: 1, LastTestPassed: true, LastTestResultKnown: true, TodosParked: 2}
-	if calls, checks := workloadAllowance(verified); calls != 40 || checks != 5 || numericScore(verified) != 92 {
+	if calls, checks := workloadAllowance(verified); calls != 40 || checks != 5 || numericScore(verified) != 100 {
 		t.Fatalf("open plan allowance=(%d,%d) score=%d", calls, checks, numericScore(verified))
 	}
 	verified.TodosCompleted = 2
-	if calls, checks := workloadAllowance(verified); calls != 44 || checks != 5 || numericScore(verified) != 96 {
+	if calls, checks := workloadAllowance(verified); calls != 44 || checks != 5 || numericScore(verified) != 100 {
 		t.Fatalf("completed plan allowance=(%d,%d) score=%d", calls, checks, numericScore(verified))
 	}
 	verified.TodoAddFailures = 2
 	verified.RepeatedTodoAdds = 2
-	if got := numericScore(verified); got != 88 {
+	if got := numericScore(verified); got != 96 {
 		t.Fatalf("failed and repeated adds did not reduce score: %d", got)
 	}
 	unverified := state{Revision: 1, TodosParked: 20}
@@ -1857,12 +1858,8 @@ func TestDistinctAgentTasksExpandOnlyCoordinationAllowance(t *testing.T) {
 		t.Fatalf("delegated allowance=(%d,%d), want (47,6)", calls, checks)
 	}
 	report := reportLine(s)
-	if !strings.Contains(report, "Delegation: 3 calls; 2 distinct tasks; 0 Spark; 1 repeated calls") {
+	if !strings.Contains(report, "Delegation: 3 calls; 2 distinct tasks; 1 repeated calls") {
 		t.Fatalf("delegation report = %s", report)
-	}
-	nonAgent := event{ToolName: "spark_database", ToolInput: json.RawMessage(`{"model":"spark"}`)}
-	if isSparkCall(nonAgent) {
-		t.Fatal("non-agent tool received a Spark discount")
 	}
 }
 

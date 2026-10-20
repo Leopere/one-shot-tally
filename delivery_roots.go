@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -571,6 +572,12 @@ func saveDeliveryRootRegistry(path string, registry deliveryRootRegistry) error 
 }
 
 func acquireDeliveryRootRegistryLock(path string) (func() error, error) {
+	return acquireFileLock(path, "touched root registry")
+}
+
+// Keep the lock inode stable. An old mtime does not establish that a holder is
+// dead; the kernel releases the advisory lock when its process exits.
+func acquireFileLock(path, label string) (func() error, error) {
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -594,7 +601,7 @@ func acquireDeliveryRootRegistryLock(path string) (func() error, error) {
 		}
 		if time.Now().After(deadline) {
 			_ = lock.Close()
-			return nil, errors.New("timed out waiting for touched root registry")
+			return nil, fmt.Errorf("timed out waiting for %s lock", label)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

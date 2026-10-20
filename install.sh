@@ -29,10 +29,13 @@ skill_dir="$install_home/.codex/skills/one-shot-tally"
 mkdir -p "$bin_dir" "$skill_dir"
 go build -o "$bin_dir/one-shot-tally" .
 install -m 0644 SKILL.md "$skill_dir/SKILL.md"
+mkdir -p "$skill_dir/hooks"
+install -m 0644 hooks/codex.json "$skill_dir/hooks/codex.json"
 cmp -s SKILL.md "$skill_dir/SKILL.md"
+cmp -s hooks/codex.json "$skill_dir/hooks/codex.json"
 version_output=$("$bin_dir/one-shot-tally" version)
 printf '%s\n' "$version_output"
-printf '%s\n' "$version_output" | grep -Fq 'one-shot-tally 1.22.0 | ColinKnapp.com'
+printf '%s\n' "$version_output" | grep -Fq 'one-shot-tally 1.23.0 | ColinKnapp.com'
 
 if [ "$install_mode" = tally-only ]; then
     printf '%s\n' "one-shot-tally: tally-only install verified"

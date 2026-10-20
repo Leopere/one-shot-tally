@@ -231,7 +231,7 @@ func blockerOutput(e event, s state, message string) (hookOutput, error) {
 	}
 	if challenge && !e.StopHookActive {
 		out.Decision = "block"
-		out.Reason = "one-shot-tally recorded FAILED: the requested outcome is still incomplete. Fact-check the blocker before stopping. Identify the attempted command, its actual result, and the specific missing access or external change. Diagnose and repair recoverable failures, then rerun the affected operation and verify its result. Passing unrelated tests or claiming success does not resolve this failure. Let native hooks own routine shipping. Do not repeat an upload whose result is unknown. If an external constraint is confirmed, report the evidence and leave the outcome FAILED; this challenge will not repeat for the same unresolved blocker."
+		out.Reason = "one-shot-tally recorded FAILED: the requested outcome is incomplete. Fact-check the blocker within existing authorization. Diagnose recoverable failures and verify the affected operation. Respect explicit user stops and confirmed access restrictions. Report the attempted command, observed result, and specific missing access or external change. Passing unrelated tests does not resolve this failure. Let native hooks own routine shipping. Reconcile unknown operations before retrying. This challenge will not repeat for the same unresolved blocker."
 	}
 	return out, nil
 }

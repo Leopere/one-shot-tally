@@ -55,16 +55,21 @@ Unresolved outcomes persist by session and project across turns. The first termi
 
 Audit statements and quoted examples do not create blocker claims. The hook does not promise universal natural-language understanding.
 
-The score uses a workload allowance. Each accepted work item expands the allowance once. Completed items include closure overhead. Distinct subagent tasks include coordination overhead. Repeated or failed additions do not expand the allowance.
+The workload score is diagnostic. Track distinct results when durable work items help. Complete an item when its result is verified. Delegate independent work when it improves the result, and give each task a distinct `task_name`.
 
-For multi-step work:
+Do not add work items, subagents, or tests just to improve the score. One relevant check can be sufficient. After a repair, rerun the affected check.
 
-1. Add one TODO for each distinct result.
-2. Complete each TODO when its result is verified.
-3. Delegate only independent items that benefit from parallel work.
-4. Give each subagent task a distinct `task_name`.
+## Models and hooks
 
-Do not create TODOs or subagents only to increase the score.
+Use configured roles and models available in the current session. Astra, Sol, and Luna receive the same activity accounting. The legacy `spark_worker` name has no discount or separate quota.
+
+The hook records the runtime's `model` field when supplied. Missing metadata stays unknown. A requested child model does not prove that child's actual model use or cost.
+
+Required `functions.wait` and agent continuations are not passive waits. Tests repeated after a new observed edit are not redundant checks. Batched JavaScript calls remain opaque without structured child evidence; printed output cannot establish verification.
+
+The [Codex hook template](hooks/codex.json) includes five lifecycle events with five-second timeouts. Merge handlers into one active config source; do not overwrite other hooks. Codex requires review and trust for new hook definitions.
+
+When `$HOME/.config/one-shot-tally/disabled` exists as a file, the hook returns `{}` without reading input or writing state. CLI commands still work. `status --json` reports `hooks_paused`. Preserve an existing pause unless the user requests activation.
 
 ## Browser startup failures
 
@@ -122,6 +127,8 @@ go test ./...
 
 The installed version line includes `ColinKnapp.com`.
 
-Use `./install.sh --tally-only` to build and copy `one-shot-tally` and this skill, then verify version `1.22.0`. It does not reinstall the file guard or profile. The default installer still performs the full install.
+Use `./install.sh --tally-only` for isolated installation checks of version `1.23.0`. It does not reinstall the file guard or profile. The default installer still performs the full install. Both modes respect the pause file.
+
+Jenkins owns release builds, installation, and live verification. The existing Mac CLI delivery path still needs migration from `.deploy-it.json`'s local installer. The Linux mail receiver has separate Jenkins jobs and is not the Mac CLI target.
 
 State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DIR` to use another path.

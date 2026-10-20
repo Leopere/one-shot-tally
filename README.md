@@ -40,6 +40,24 @@ The base allowance is 30 weighted calls and three checks. Each accepted work ite
 
 Standard mode and goal mode use the same workload allowance.
 
+## Current models
+
+Tally observes the model selected by the runtime. It does not choose a model or infer token prices or quotas from role names. All models receive the same call weight. The legacy `spark_worker` role has no special discount.
+
+Use the configured Astra role for complex implementation, Sol for exploration or review, and Luna for bounded edits. Check available roles in the current session. Avoid copying old model IDs from saved reports.
+
+The report includes `Observed models` when hook events supply a `model` field. It does not infer a child's actual model from a spawn request.
+
+Required `functions.wait` and agent continuations are not passive waits. A test rerun after a new observed edit is not redundant. One relevant check after an edit can receive the full activity score. Structured result evidence is still required.
+
+Parallel hooks use the same bounded kernel file lock as the delivery registry. A slow active holder cannot lose its lock because its timestamp is old. Lock acquisition still times out after 1.5 seconds and fails open; contention can leave observations incomplete.
+
+Version 1.23 migrates old state to neutral call weights and clears revision-blind repetition penalties, including in-flight test flags. Historical `spark_calls` remains readable for compatibility but is no longer incremented or displayed.
+
+Code-mode batches still require structured child events to classify their checks. Tally does not execute or interpret arbitrary JavaScript to infer successful child work.
+
+This tuning follows OpenAI's guidance to keep [skills and prompts focused on the requested outcome](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra).
+
 When a native Chrome or Chromium launch fails during startup, tally can advise the agent to change the browser runtime before retrying. Page errors and unrelated command failures do not trigger this guidance. See [browser startup failures](SKILL.md#browser-startup-failures) for the verified local alternative and its limits.
 
 ## Language rules
@@ -111,7 +129,7 @@ one-shot-tally todo add 'Review cache invalidation path' \
 
 Use `todo list` to review entries. Use `todo done ID` when the result is complete. The report shows accepted items, add attempts, repeated adds, completed items, and open items.
 
-Delegate an item only when it is independent and parallel work improves the result. Use a distinct `task_name` for each subagent task. The report shows total, distinct, Spark, and repeated subagent calls.
+Delegate an item only when it is independent and parallel work improves the result. Use a distinct `task_name` for each subagent task. The report shows total, distinct, and repeated subagent calls.
 
 ## Resume a goal
 
@@ -166,9 +184,15 @@ go test ./...
 
 The installer builds `~/.local/bin/one-shot-tally`, copies `SKILL.md` to `~/.codex/skills/one-shot-tally/SKILL.md`, and verifies the installed version. Re-run it after each upgrade.
 
-Use `./install.sh --tally-only` to build and copy only `one-shot-tally` and its skill, then verify version `1.22.0`. This mode does not reinstall the file guard or its profile. The default `./install.sh` behavior remains the full install.
+Use `./install.sh --tally-only` for isolated installation checks of version `1.23.0`. This mode builds and copies only `one-shot-tally` and its skill. It does not reinstall the file guard or its profile. The default `./install.sh` behavior remains the full install.
 
-Installation does not enable hooks. Configure Codex to run the absolute installed path for the hook events you want. The supplied setup supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
+Installation does not enable hooks. The [Codex hook template](hooks/codex.json) configures `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`, with five-second timeouts. The command quotes `$HOME` for paths containing spaces.
+
+Merge these handlers into one active Codex hook source. Preserve other handlers. Account directories can share a hook file through symlinks; avoid registering the same handlers in multiple active sources. Use Codex's `/hooks` interface to review and trust new definitions. See the [official hooks documentation](https://learn.chatgpt.com/docs/hooks).
+
+The pause file at `$HOME/.config/one-shot-tally/disabled` disables hook bookkeeping and installation. A paused hook immediately returns `{}`. CLI commands remain available, and `status --json` includes `hooks_paused`. An upgrade does not clear the pause.
+
+Jenkins owns release builds, artifact publication, installation, and live acceptance. The current `.deploy-it.json` still points to a local installer and needs a Jenkins Mac CLI delivery path. Existing `build-one-shot-receiver`, `sign-one-shot-receiver`, and `deploy-one-shot-receiver` jobs target the separate Linux mail receiver. They do not establish that the Mac hook binary is deployed. Keep this gap visible when reporting delivery.
 
 State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DIR` for isolated testing. Goal history uses `$CODEX_HOME/goals_1.sqlite` for named accounts and otherwise `$HOME/.codex/goals_1.sqlite`.
 
