@@ -44,7 +44,7 @@ Standard mode and goal mode use the same workload allowance.
 
 Tally observes the model selected by the runtime. It does not choose a model or infer token prices or quotas from role names. All models receive the same call weight. The legacy `spark_worker` role has no special discount.
 
-Use the configured Astra role for complex implementation, Sol for exploration or review, and Luna for bounded edits. Check available roles in the current session. Avoid copying old model IDs from saved reports.
+Use Luna for routine work, bounded edits, and exploration. Use Sol for complex implementation and independent review. Reserve Astra for explicit escalation. Check available roles in the current session. Avoid copying old model IDs from saved reports.
 
 The report includes `Observed models` when hook events supply a `model` field. It does not infer a child's actual model from a spawn request.
 
