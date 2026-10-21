@@ -1019,7 +1019,7 @@ func TestBackgroundStewardshipRewardAndPassiveWaitPenalty(t *testing.T) {
 	b, _ := os.ReadFile(files[0])
 	var s state
 	_ = json.Unmarshal(b, &s)
-	if s.BackgroundRecords != 1 || s.PassiveWaits != 1 || numericScore(s) != 98 {
+	if s.BackgroundRecords != 1 || s.PassiveWaits != 1 || numericScore(s) != 93 {
 		t.Fatalf("stewardship accounting = %#v score=%d", s, numericScore(s))
 	}
 	if report := reportLine(s); !strings.Contains(report, "Background: 1 recorded; 0 completed; 1 passive waits") {

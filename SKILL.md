@@ -43,7 +43,7 @@ unintended defects, faulty tests, or environment problems; repair the relevant
 cause and continue. Failed tests do not become passing tests. Verify the actual
 deployment independently.
 
-`SessionStart`, `UserPromptSubmit`, and `PreToolUse` return `{}`. `PostToolUse` normally returns `{}`. A recognized native browser startup error adds recovery guidance. The hook does not change or approve commands.
+`SessionStart`, `UserPromptSubmit`, and `PreToolUse` return `{}`. `PostToolUse` normally returns `{}`. Recognized browser startup errors and long or frequent waits add recovery guidance. The hook does not change or approve commands.
 
 The first `Stop` reports the recorded facts. A repeated `Stop` returns `{}` unless the blocker or recovery report changed.
 
@@ -65,7 +65,20 @@ Use configured roles and models available in the current session. Astra, Sol, an
 
 The hook records the runtime's `model` field when supplied. Missing metadata stays unknown. A requested child model does not prove that child's actual model use or cost.
 
-Required `functions.wait` and agent continuations are not passive waits. Tests repeated after a new observed edit are not redundant checks. Batched JavaScript calls remain opaque without structured child evidence; printed output cannot establish verification.
+Observable `wait`, agent-wait, sleep, and empty-stdin polling calls count toward wait scoring. The first two brief continuations are free; passive sleeps and untracked idle polls retain their existing penalty. Each later wait costs five points. Each wait call's observed duration above 10 seconds adds five penalty points per started 10 seconds of aggregate excess. The total is capped at 70 points, with at least the existing passive-wait deduction, capped at 25 points. Bonuses cannot erase waiting costs.
+
+Use observed elapsed time or a top-level native duration when available. A requested timeout is not elapsed time. Long waits or frequent polling can produce at most two advisory `PostToolUse` notices. Notices never veto calls or mark the outcome failed.
+
+When an operation is still running, keep its existing operation handle and add one TODO check-in. Put the current status command, next-check trigger, and expected completion in `--context`. Continue independent work while it runs:
+
+```sh
+one-shot-tally todo add 'Check running build' \
+  --context 'Operation: <existing job/handle>; status: <command>; check when <trigger>; expected completion: <result or time>'
+```
+
+If the operation does not finish, report the observed evidence and lack of progress. Name the exact dependency or condition being awaited, then state the concrete action that will unblock it. Do not mark pending work complete. Do not restart an unknown external write until its result is known. For detached jobs, use `background record` and let the job call `background complete ID --wake` when it finishes.
+
+Tests repeated after a new observed edit are not redundant checks. Batched JavaScript calls remain opaque without structured child evidence; printed output cannot establish verification.
 
 The [Codex hook template](hooks/codex.json) includes five lifecycle events with five-second timeouts. Merge handlers into one active config source; do not overwrite other hooks. Codex requires review and trust for new hook definitions.
 

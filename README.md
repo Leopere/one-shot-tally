@@ -23,13 +23,13 @@ reflect an intentional change, an unintended defect, a faulty test, or an
 environment problem. Repair the relevant cause and continue. A failed test
 does not become a pass, and passing tests alone do not prove deployment.
 
-The base allowance is 30 weighted calls and three checks. Each accepted work item adds five calls and one check. Each completed item adds two calls. A distinct subagent task adds one call for coordination. The report uses at most 12 work items, seven added checks, and four subagent tasks. Repeated and failed additions reduce the score but do not expand the allowance.
+The base allowance is 30 weighted calls and three checks. Each accepted work item adds five calls and one check. Each completed item adds two calls. A distinct subagent task adds one call for coordination. The report uses at most 12 work items, seven added checks, and four subagent tasks. Repeated and failed additions reduce the score but do not expand the allowance. Long and repeated waits now reduce the efficiency score; they do not change the recorded outcome.
 
 ## Hook behavior
 
 - `SessionStart` and `UserPromptSubmit` return `{}`.
 - `PreToolUse` records calls and returns `{}`. It does not rewrite or approve a command.
-- `PostToolUse` records explicit structured results and normally returns `{}`. Recognized native browser startup errors add recovery guidance. Plain output text is not proof of success.
+- `PostToolUse` records explicit structured results and normally returns `{}`. Recognized browser startup errors and long or frequent waits add recovery guidance. Plain output text is not proof of success.
 - Native `DeliveryResult` events record the actual `ship-it` or `deploy-it` result.
 - Native command tracking includes literal Python paths and constant `Path` assignments outside the working repository. Only a changed repository enters the delivery queue; the hook does not scan neighbouring folders or run Python to discover paths.
 - Structured command metadata and native delivery receipts supply result evidence. Prose, quoted examples, printed markers, and JSON printed in command stdout cannot prove success. Native receipts use a cooperating local executable protocol, not an authenticated remote service.
@@ -48,7 +48,22 @@ Use Luna for routine work, bounded edits, and exploration. Use Sol for complex i
 
 The report includes `Observed models` when hook events supply a `model` field. It does not infer a child's actual model from a spawn request.
 
-Required `functions.wait` and agent continuations are not passive waits. A test rerun after a new observed edit is not redundant. One relevant check after an edit can receive the full activity score. Structured result evidence is still required.
+## Waits and check-ins
+
+Observable `wait`, agent-wait, sleep, and empty-stdin polling calls count toward wait scoring. The first two brief continuations are free; passive sleeps and untracked idle polls retain their existing penalty. Each later wait costs five points. Each wait call's observed duration above 10 seconds adds five penalty points per started 10 seconds of aggregate excess. The total is capped at 70 points, with at least the existing passive-wait deduction, capped at 25 points. Bonuses cannot erase waiting costs.
+
+Duration uses an observed elapsed time or a top-level native duration when available. A requested timeout is not elapsed time. Long waits or frequent polling can produce at most two advisory `PostToolUse` notices. Notices never veto a call or mark the outcome failed.
+
+When an operation is still running, keep its existing operation handle and add one TODO check-in. Include the current status command, the next-check trigger, and the expected completion in `--context`. Continue independent work while it runs:
+
+```sh
+one-shot-tally todo add 'Check running build' \
+  --context 'Operation: <existing job/handle>; status: <command>; check when <trigger>; expected completion: <result or time>'
+```
+
+If the operation does not finish, report the observed evidence and lack of progress, name the exact dependency or condition being awaited, and state the concrete action that will unblock it. Do not mark pending work complete. Do not restart an unknown external write until its result is known. For detached jobs, use `background record` and let the job call `background complete ID --wake` when it finishes.
+
+A test rerun after a new observed edit is not redundant. One relevant check after an edit can receive the full activity score. Structured result evidence is still required.
 
 Parallel hooks use the same bounded kernel file lock as the delivery registry. A slow active holder cannot lose its lock because its timestamp is old. Lock acquisition still times out after 1.5 seconds and fails open; contention can leave observations incomplete.
 

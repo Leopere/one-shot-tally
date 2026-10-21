@@ -85,6 +85,8 @@ type pendingCall struct {
 	Sequence             int               `json:"sequence,omitempty"`
 	OperationKey         string            `json:"operation_key,omitempty"`
 	OperationKind        string            `json:"operation_kind,omitempty"`
+	Wait                 bool              `json:"wait,omitempty"`
+	WaitStartedAt        time.Time         `json:"wait_started_at,omitempty"`
 }
 
 type state struct {
@@ -118,6 +120,11 @@ type state struct {
 	BackgroundCompletions        int                    `json:"background_completions"`
 	PassiveWaits                 int                    `json:"passive_waits"`
 	PassiveWaitStreak            int                    `json:"passive_wait_streak"`
+	WaitCalls                    int                    `json:"wait_calls"`
+	TotalWaitMillis              int64                  `json:"total_wait_millis"`
+	LongWaits                    int                    `json:"long_waits"`
+	ExcessWaitMillis             int64                  `json:"excess_wait_millis"`
+	WaitFeedbackLevel            int                    `json:"wait_feedback_level"`
 	TodosParked                  int                    `json:"todos_parked"`
 	TodosCompleted               int                    `json:"todos_completed"`
 	TodoAddAttempts              int                    `json:"todo_add_attempts"`
@@ -493,6 +500,13 @@ func preToolUse(e event, w io.Writer) error {
 			s.TotalCalls++
 			s.CallCostUnits += 4
 			s.ToolCounts[e.ToolName]++
+			pending.Wait = isWaitObservation(e, command)
+			if pending.Wait {
+				s.WaitCalls++
+				pending.WaitStartedAt = time.Now().UTC()
+			} else {
+				pending.WaitStartedAt = time.Time{}
+			}
 			s.Pending[e.ToolUseID] = pending
 			if err := save(p, s); err != nil {
 				return err
@@ -518,7 +532,8 @@ func preToolUse(e event, w io.Writer) error {
 	}
 	isProduction := isCommand && productionInvocation(command, isShipping, isDeploying)
 	isRead := readRE.MatchString(command)
-	isPassiveWait := passiveWait(e, command)
+	isWait := isWaitObservation(e, command)
+	isPassiveWait := isWait && passiveWait(e, command)
 	isBackgroundRecord := isCommand && backgroundRecordRE.MatchString(command)
 	isBackgroundComplete := isCommand && backgroundCompleteRE.MatchString(command)
 	isTodoAdd := isCommand && standaloneTrackedCommand(command, todoAddRE)
@@ -576,6 +591,11 @@ func preToolUse(e event, w io.Writer) error {
 		s.PassiveWaits++
 		s.PassiveWaitStreak++
 	}
+	waitStartedAt := time.Time{}
+	if isWait {
+		s.WaitCalls++
+		waitStartedAt = time.Now().UTC()
+	}
 	if isShipping {
 		s.ShipAttempts++
 		s.LastShipResultSequence = s.TotalCalls
@@ -608,7 +628,7 @@ func preToolUse(e event, w io.Writer) error {
 		commandRootSnapshots = opaqueCommandRootSnapshots(command, e.ToolInput, e.CWD)
 	}
 	if e.ToolUseID != "" {
-		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, BrowserLaunch: isBrowserLaunch, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, OpaqueMutation: isOpaqueMutation, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, CommandRootSnapshots: commandRootSnapshots, WorkingDirectory: e.CWD, Sequence: s.TotalCalls, OperationKey: operationKey, OperationKind: operationKind}
+		s.Pending[e.ToolUseID] = pendingCall{Test: isTest, BrowserLaunch: isBrowserLaunch, Production: isProduction, Revision: s.Revision, StartedAt: time.Now().UTC(), RepeatedTest: repeatedTest, BackgroundRecord: isBackgroundRecord, BackgroundComplete: isBackgroundComplete, TodoAdd: isTodoAdd, TodoDone: isTodoDone, GoalTransition: goalChange, Edit: isEdit, Shipping: isShipping, Deploying: isDeploying, OpaqueMutation: isOpaqueMutation, DeployCommitMatch: deployCommitMatch, TestEligible: isTest && currentEditReady(s) && !hasPendingEdit(s), WorktreeKnown: worktreeKnown, WorktreeSnapshot: worktreeSnapshot, CommandRootSnapshots: commandRootSnapshots, WorkingDirectory: e.CWD, Sequence: s.TotalCalls, OperationKey: operationKey, OperationKind: operationKind, Wait: isWait, WaitStartedAt: waitStartedAt}
 	}
 	if repeats == 4 {
 		s.RepeatedWarnings++
@@ -651,13 +671,19 @@ func postToolUse(e event, w io.Writer) error {
 	browserFeedback := ""
 	if ok {
 		delete(s.Pending, e.ToolUseID)
+		recordWaitFinish(&s, pending, e.ToolResponse, time.Now().UTC())
+		// Execution timing belongs to the original command. A poll's wait
+		// timing belongs only to that poll and must not survive another yield.
+		pending.Wait = false
+		pending.WaitStartedAt = time.Time{}
 		if nativeResponseTool(e.ToolName) {
 			if executionID := nativeRunningSession(e.ToolResponse); executionID != "" {
 				s.Running[executionID] = pending
+				feedback := waitFeedback(&s)
 				if err := save(p, s); err != nil {
 					return err
 				}
-				return writeJSON(w, hookOutput{})
+				return writePostToolFeedback(w, feedback)
 			}
 		}
 		resultKnown, resultSucceeded = hookResponseResult(e.ToolName, e.ToolResponse)
@@ -811,15 +837,20 @@ func postToolUse(e event, w io.Writer) error {
 	if err := refreshBlockers(&s, e); err != nil {
 		return err
 	}
+	feedback := strings.TrimSpace(strings.Join([]string{browserFeedback, waitFeedback(&s)}, "\n"))
 	if err := save(p, s); err != nil {
 		return err
 	}
-	if browserFeedback == "" {
+	return writePostToolFeedback(w, feedback)
+}
+
+func writePostToolFeedback(w io.Writer, feedback string) error {
+	if feedback == "" {
 		return writeJSON(w, hookOutput{})
 	}
 	return writeJSON(w, postToolHookOutput{HookSpecificOutput: postToolSpecificOutput{
 		HookEventName:     "PostToolUse",
-		AdditionalContext: browserFeedback,
+		AdditionalContext: feedback,
 	}})
 }
 
@@ -979,6 +1010,9 @@ func reportLine(s state) string {
 		}
 		report += "\nObserved models: " + strings.Join(labels, "; ")
 	}
+	if waits := waitReport(s); waits != "" {
+		report += "\n" + waits
+	}
 	if review := blockerReport(s); review != "" {
 		report += "\n" + review
 	}
@@ -997,7 +1031,7 @@ func numericScore(s state) int {
 		return 0
 	}
 	if s.Revision > 0 && (s.Tests == 0 || s.LastTestResultKnown && s.VerifiedRevision != s.Revision) {
-		return 25
+		return maxInt(0, 25-waitPenalty(s))
 	}
 	score := 100
 	tests := completedTests(s)
@@ -1011,7 +1045,6 @@ func numericScore(s state) int {
 	case testExcess == 1:
 		score -= 10
 	}
-	score -= minInt(25, s.PassiveWaits*7)
 	score += minInt(10, s.BackgroundRecords*5)
 	if finalPassed(s) {
 		score += minInt(8, minInt(planItems(s), planCompleted(s))*2)
@@ -1045,12 +1078,14 @@ func numericScore(s state) int {
 		score = 0
 	}
 	if score > 100 {
-		return 100
+		score = 100
 	}
 	if finalPassed(s) && score < 50 {
-		return 50
+		score = 50
 	}
-	return score
+	// Apply all waiting costs after bonuses and the verified-work floor.
+	// Bookkeeping cannot erase waiting; outcomes remain independent.
+	return maxInt(0, score-waitPenalty(s))
 }
 
 func workloadAllowance(s state) (calls, checks int) {
