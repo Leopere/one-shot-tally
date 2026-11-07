@@ -33,6 +33,8 @@ def main():
         state = root / "state"
         fake_bin = root / "bin"
         repo.mkdir()
+        home = root / "home"
+        home.mkdir()
         state.mkdir()
         fake_bin.mkdir()
         marker = root / "legacy-command-ran"
@@ -40,7 +42,7 @@ def main():
         retired.write_text(f"#!/bin/sh\nprintf invoked > {marker}\n", encoding="utf-8")
         retired.chmod(0o755)
         env = os.environ.copy()
-        env.update({"ONE_SHOT_STATE_DIR": str(state), "PATH": str(fake_bin) + os.pathsep + env.get("PATH", "")})
+        env.update({"HOME": str(home), "CODEX_HOME": str(home / ".codex"), "ONE_SHOT_STATE_DIR": str(state), "PATH": str(fake_bin) + os.pathsep + env.get("PATH", "")})
 
         base = {"session_id": "retired-command", "turn_id": "legacy", "cwd": str(repo)}
         pre = invoke(tally, {**base, "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -53,6 +55,12 @@ def main():
             raise AssertionError(f"retired command supplied delivery evidence: {post!r}")
         if marker.exists():
             raise AssertionError("one-shot-tally executed the retired deploy-it binary")
+        recorded = [json.loads(path.read_text()) for path in state.rglob("*.json")]
+        turns = [row for row in recorded if "deploy_attempts" in row]
+        if not turns or not any(row.get("total_calls", 0) > 0 for row in turns):
+            raise AssertionError("isolated hook bookkeeping did not run")
+        if any(row.get("deploy_attempts", 0) or row.get("deploy_completions", 0) for row in turns):
+            raise AssertionError("retired command became deployment evidence")
 
 
 if __name__ == "__main__":
