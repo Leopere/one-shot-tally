@@ -27,7 +27,7 @@ func receiptEvent(t *testing.T, dir, cwd, turn, attempt, status string) map[stri
 		exitCode = 1
 	}
 	commit, _ := exec.Command("git", "-C", cwd, "rev-parse", "HEAD").Output()
-	return feedbackEvent(t, dir, cwd, turn, "DeliveryResult", map[string]any{"delivery_kind": "deploy", "delivery_status": status, "delivery_attempt_id": attempt, "delivery_commit": strings.TrimSpace(string(commit)), "tool_response": map[string]any{"exit_code": exitCode}})
+	return feedbackEvent(t, dir, cwd, turn, "DeliveryResult", map[string]any{"delivery_kind": "ship", "delivery_status": status, "delivery_attempt_id": attempt, "delivery_commit": strings.TrimSpace(string(commit)), "tool_response": map[string]any{"exit_code": exitCode}})
 }
 
 func testReceiptID(sequence int) string { return fmt.Sprintf("%d-%024x", sequence, sequence) }
@@ -151,7 +151,7 @@ func TestOlderNativeSuccessCannotClearNewerFailure(t *testing.T) {
 	receiptEvent(t, dir, cwd, "newer", testReceiptID(200), "failed")
 	for _, invalid := range []string{"missing-timestamp", "0-000000000000000000000000", "999999999999999999999999-000000000000000000000000"} {
 		var out bytes.Buffer
-		if err := deliveryResult(event{HookEventName: "DeliveryResult", SessionID: "blocker-session", TurnID: "invalid", CWD: cwd, DeliveryKind: "deploy", DeliveryStatus: "failed", DeliveryAttemptID: invalid, ToolResponse: json.RawMessage(`{"exit_code":1}`)}, &out); err == nil {
+		if err := deliveryResult(event{HookEventName: "DeliveryResult", SessionID: "blocker-session", TurnID: "invalid", CWD: cwd, DeliveryKind: "ship", DeliveryStatus: "failed", DeliveryAttemptID: invalid, ToolResponse: json.RawMessage(`{"exit_code":1}`)}, &out); err == nil {
 			t.Fatalf("invalid receipt accepted: %q", invalid)
 		}
 	}
@@ -162,6 +162,20 @@ func TestOlderNativeSuccessCannotClearNewerFailure(t *testing.T) {
 	l, _ := ledgerLoad(event{SessionID: "blocker-session", CWD: cwd})
 	if l.unresolvedCount() != 1 || l.Recoveries != 0 {
 		t.Fatalf("late success erased failure: %#v", l)
+	}
+}
+
+func TestLegacyDeployReceiptCannotCountAsDelivery(t *testing.T) {
+	cwd, _ := committedTestRepo(t, "package app\n")
+	commit, _ := exec.Command("git", "-C", cwd, "rev-parse", "HEAD").Output()
+	var output bytes.Buffer
+	err := deliveryResult(event{
+		HookEventName: "DeliveryResult", SessionID: "blocker-session", TurnID: "legacy-deploy",
+		CWD: cwd, DeliveryKind: "deploy", DeliveryStatus: "succeeded", DeliveryAttemptID: testReceiptID(1),
+		DeliveryCommit: strings.TrimSpace(string(commit)), ToolResponse: json.RawMessage(`{"exit_code":0}`),
+	}, &output)
+	if err == nil {
+		t.Fatal("legacy deploy receipt was accepted as delivery evidence")
 	}
 }
 

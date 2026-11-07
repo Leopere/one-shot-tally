@@ -33,7 +33,7 @@ The hook records activity, checks, delivery, background work, work items, and su
 - `NO OBSERVED WORK`: no tool activity.
 - `ACTIVITY OBSERVED`: activity without verified current edits.
 - `FAILED`: an unresolved delivery, edit, or other non-test action failed, or the requested outcome was abandoned.
-- `VERIFIED`: native delivery succeeded for the current revision, or the current edit completed and a later standalone local check passed.
+- `VERIFIED`: a native Git shipping receipt succeeded for the current revision, or the current edit completed and a later standalone local check passed.
 - `RECOVERED`: a failed delivery later has a matching structured success. The report shows `INCREDIBLE WIN` and outcome grade 100. Efficiency remains diagnostic.
 
 Test failures are advisory. Keep them visible without automatically marking the
@@ -47,9 +47,9 @@ deployment independently.
 
 The first `Stop` reports the recorded facts. A repeated `Stop` returns `{}` unless the blocker or recovery report changed.
 
-Native `DeliveryResult` events record `ship-it` and `deploy-it` outcomes through a cooperating local executable protocol. Structured command metadata can also supply result evidence. Prose, quoted examples, printed markers, and JSON printed in command stdout cannot prove success.
+Native `DeliveryResult` events record Git shipping results. Structured command metadata can also supply result evidence. Legacy deployment commands do not prove deployment success; use the repository Jenkins command for deployment acceptance.
 
-Some Codex command hooks supply stdout without an exit status. Those results remain unknown. Native delivery sends its result directly after the repository command returns. A successful receipt must match a clean current checkout before it clears incomplete delivery.
+Some Codex command hooks supply stdout without an exit status. Those results remain unknown. A successful shipping receipt must match a clean current checkout before it clears incomplete delivery.
 
 Unresolved outcomes persist by session and project across turns. The first terminal blocker claim observed at `Stop` gets one bounded `decision:block` response that asks for fact checking and recovery. A repeated unresolved `Stop` does not continue the response, but the changed outcome remains visible. An unresolved delivery is `FAILED` with outcome grade 0.
 
@@ -142,6 +142,6 @@ The installed version line includes `ColinKnapp.com`.
 
 Use `./install.sh --tally-only` for isolated installation checks of version `1.23.0`. It does not reinstall the file guard or profile. The default installer still performs the full install. Both modes respect the pause file.
 
-Jenkins owns release builds, installation, and live verification. The existing Mac CLI delivery path still needs migration from `.deploy-it.json`'s local installer. The Linux mail receiver has separate Jenkins jobs and is not the Mac CLI target.
+Jenkins job `deploy-one-shot-tally` owns release builds, installation, and live verification at `/Users/aedev/.local/bin/one-shot-tally`. After pushing the exact revision to `main`, run `python3 scripts/jenkins-delivery.py`; it verifies local `HEAD` matches `origin/main` and submits that revision to Jenkins. The accepted artifact records the revision, binary digest, live checks and delivery timings. The Linux mail receiver uses separate jobs.
 
 State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DIR` to use another path.

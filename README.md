@@ -30,10 +30,10 @@ The base allowance is 30 weighted calls and three checks. Each accepted work ite
 - `SessionStart` and `UserPromptSubmit` return `{}`.
 - `PreToolUse` records calls and returns `{}`. It does not rewrite or approve a command.
 - `PostToolUse` records explicit structured results and normally returns `{}`. Recognized browser startup errors and long or frequent waits add recovery guidance. Plain output text is not proof of success.
-- Native `DeliveryResult` events record the actual `ship-it` or `deploy-it` result.
+- Native `DeliveryResult` events record verified Git shipping results. Deployment is checked by the repository Jenkins command.
 - Native command tracking includes literal Python paths and constant `Path` assignments outside the working repository. Only a changed repository enters the delivery queue; the hook does not scan neighbouring folders or run Python to discover paths.
-- Structured command metadata and native delivery receipts supply result evidence. Prose, quoted examples, printed markers, and JSON printed in command stdout cannot prove success. Native receipts use a cooperating local executable protocol, not an authenticated remote service.
-- Some Codex command hooks supply stdout without an exit status. Those results remain unknown. Native delivery reports its result directly after the repository command returns. A successful receipt must match a clean current checkout before it clears incomplete delivery.
+- Structured command metadata and native shipping receipts supply result evidence. Prose, quoted examples, printed markers, JSON printed in command stdout, and legacy deployment commands cannot prove deployment success.
+- Some Codex command hooks supply stdout without an exit status. Those results remain unknown. A successful shipping receipt must match a clean current checkout before it clears incomplete delivery.
 - Unresolved results persist by session and project across turns. The first terminal blocker claim that is observed at `Stop` gets one bounded `decision:block` response that asks for fact checking and recovery.
 - A repeated unresolved `Stop` does not continue the blocker response, but the changed outcome remains visible. An unresolved delivery is `FAILED` with outcome grade 0.
 - Audit statements and quoted examples do not create blocker claims. The hook does not promise universal natural-language understanding.
@@ -207,7 +207,7 @@ Merge these handlers into one active Codex hook source. Preserve other handlers.
 
 The pause file at `$HOME/.config/one-shot-tally/disabled` disables hook bookkeeping and installation. A paused hook immediately returns `{}`. CLI commands remain available, and `status --json` includes `hooks_paused`. An upgrade does not clear the pause.
 
-Jenkins owns release builds, artifact publication, installation, and live acceptance. The current `.deploy-it.json` still points to a local installer and needs a Jenkins Mac CLI delivery path. Existing `build-one-shot-receiver`, `sign-one-shot-receiver`, and `deploy-one-shot-receiver` jobs target the separate Linux mail receiver. They do not establish that the Mac hook binary is deployed. Keep this gap visible when reporting delivery.
+Jenkins job `deploy-one-shot-tally` owns release builds, artifact publication, installation, and live acceptance. After pushing the exact revision to `main`, run `python3 scripts/jenkins-delivery.py`; it checks that local `HEAD` matches `origin/main` before submitting the revision to Jenkins. The trusted controller installs `/Users/aedev/.local/bin/one-shot-tally` and its skill and preserves the pause file.
 
 State defaults to `$HOME/.codex/state/one-shot-delivery`. Set `ONE_SHOT_STATE_DIR` for isolated testing. Goal history uses `$CODEX_HOME/goals_1.sqlite` for named accounts and otherwise `$HOME/.codex/goals_1.sqlite`.
 

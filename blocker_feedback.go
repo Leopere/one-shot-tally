@@ -117,6 +117,9 @@ func refreshBlockers(s *state, e event) error {
 }
 
 func recordOperationResult(s *state, e event, pending pendingCall, known, passed bool) error {
+	if pending.Deploying || pending.OperationKind == "deploy" {
+		return nil
+	}
 	if pending.OperationKey == "" {
 		return nil
 	}
@@ -166,14 +169,6 @@ func recordOperationResult(s *state, e event, pending pendingCall, known, passed
 		status = blockerStatusFailed
 	}
 	if known && passed {
-		if pending.Shipping && pending.OperationKind == "deploy" {
-			return nil
-		}
-		// An explicit deploy can only resolve this project's delivery when its
-		// immutable commit matches the checkout observed before execution.
-		if pending.Deploying && !pending.DeployCommitMatch {
-			return nil
-		}
 		status = blockerStatusSucceeded
 	}
 	_, err := ledgerRecord(e, pending.OperationKey, pending.OperationKind, status)
@@ -239,7 +234,7 @@ func blockerOutput(e event, s state, message string) (hookOutput, error) {
 // DeliveryResult is emitted by the native shipping process after the repository
 // command returns. It records the actual handoff, not the agent's final prose.
 func deliveryResult(e event, w io.Writer) error {
-	if e.SessionID == "" || e.TurnID == "" || e.CWD == "" || e.DeliveryAttemptID == "" || !oneOf(e.DeliveryKind, "ship", "deploy") || !oneOf(e.DeliveryStatus, "failed", "succeeded") {
+	if e.SessionID == "" || e.TurnID == "" || e.CWD == "" || e.DeliveryAttemptID == "" || e.DeliveryKind != "ship" || !oneOf(e.DeliveryStatus, "failed", "succeeded") {
 		return errors.New("invalid delivery receipt identity or status")
 	}
 	stamp, _, _ := strings.Cut(e.DeliveryAttemptID, "-")

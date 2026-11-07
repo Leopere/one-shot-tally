@@ -1186,7 +1186,7 @@ func TestDeliveryInvocationClassification(t *testing.T) {
 		{"ship-it start", false, false},
 		{"git push origin main", false, false},
 		{"git push --dry-run origin main", false, false},
-		{"deploy-it --commit abc --branch main", false, true},
+		{"deploy-it --commit abc --branch main", false, false},
 		{"deploy-it check", false, false},
 		{"ship-it && deploy-it --commit abc --branch main", false, false},
 		{"ship-it || true", false, false},
@@ -1271,10 +1271,7 @@ func TestVerifiedStopClosesShipAndDeployLoop(t *testing.T) {
 			hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "ship", "tool_response": map[string]any{"exit_code": 0}})
 			done := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "Stop"})
 			doneMessage := done["systemMessage"].(string)
-			if withContract && !strings.Contains(doneMessage, "shipping recorded; deployment result unknown") {
-				t.Fatalf("successful shipping did not preserve deploy proof boundary: %#v", done)
-			}
-			if !withContract && !strings.Contains(doneMessage, "shipping recorded; no deployment contract") {
+			if !strings.Contains(doneMessage, "shipping recorded; use the repository's Jenkins command to check deployment") {
 				t.Fatalf("successful shipping not recorded: %#v", done)
 			}
 			if done["decision"] == "block" {
@@ -1349,7 +1346,7 @@ func TestOutOfOrderEditResultsFollowNewestRevision(t *testing.T) {
 }
 
 func TestFailedShipOrDeployGivesRecoveryCoaching(t *testing.T) {
-	for _, command := range []string{"ship-it", "deploy-it --commit abc --branch main"} {
+	for _, command := range []string{"ship-it"} {
 		t.Run(command, func(t *testing.T) {
 			dir := retainedTestDir(t)
 			common := map[string]any{"session_id": "s", "turn_id": command}
@@ -1371,7 +1368,7 @@ func TestFailedShipOrDeployGivesRecoveryCoaching(t *testing.T) {
 }
 
 func TestFailedDeliveryWithoutLocalEditKeepsSpecificGuidance(t *testing.T) {
-	for _, command := range []string{"ship-it", "deploy-it --commit abc --branch main"} {
+	for _, command := range []string{"ship-it"} {
 		t.Run(command, func(t *testing.T) {
 			dir := retainedTestDir(t)
 			hook(t, dir, map[string]any{
@@ -1392,7 +1389,7 @@ func TestFailedDeliveryWithoutLocalEditKeepsSpecificGuidance(t *testing.T) {
 }
 
 func TestCorrectedDeliveryCanResumeAfterFailure(t *testing.T) {
-	for _, command := range []string{"ship-it", "deploy-it --commit abc --branch main"} {
+	for _, command := range []string{"ship-it"} {
 		t.Run(command, func(t *testing.T) {
 			dir := retainedTestDir(t)
 			common := map[string]any{"session_id": "s", "turn_id": command}
@@ -1415,14 +1412,9 @@ func TestCorrectedDeliveryCanResumeAfterFailure(t *testing.T) {
 	}
 }
 
-func TestSuccessfulDeployResolvesEarlierShipFailure(t *testing.T) {
+func TestLegacyDeployCommandDoesNotResolveEarlierShipFailure(t *testing.T) {
 	dir := retainedTestDir(t)
 	repo, _ := committedTestRepo(t, "package app\n")
-	headOutput, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	head := strings.TrimSpace(string(headOutput))
 	common := map[string]any{"session_id": "s", "turn_id": "ship-then-deploy", "cwd": repo}
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_input": map[string]any{"patch": "change"}})
 	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_use_id": "edit", "tool_response": map[string]any{"exit_code": 0}})
@@ -1434,15 +1426,12 @@ func TestSuccessfulDeployResolvesEarlierShipFailure(t *testing.T) {
 	if blocked["decision"] != "block" || !strings.Contains(blocked["systemMessage"].(string), "ship-it failed") {
 		t.Fatalf("failed ship-it was not advisory: %#v", blocked)
 	}
-	preDeploy := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_input": map[string]any{"command": "deploy-it --commit " + head + " --branch main"}})
-	assertEmptyHookOutput(t, preDeploy)
-	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "deploy", "tool_response": map[string]any{"exit_code": 0}})
-	done := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "Stop", "stop_hook_active": true})
-	if done["decision"] == "block" || !strings.Contains(done["systemMessage"].(string), "INCREDIBLE WIN") {
-		t.Fatalf("recovery missing: %#v", done)
-	}
-	if !recoveredCurrentDeployment(loadTestState(t, dir)) {
-		t.Fatalf("successful deploy-it did not resolve earlier ship failure")
+	legacyDeploy := hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "legacy-deploy", "tool_input": map[string]any{"command": "deploy-it --commit " + strings.Repeat("a", 40) + " --branch main"}})
+	assertEmptyHookOutput(t, legacyDeploy)
+	hook(t, dir, map[string]any{"session_id": common["session_id"], "turn_id": common["turn_id"], "cwd": repo, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "legacy-deploy", "tool_response": map[string]any{"exit_code": 0}})
+	state := loadTestState(t, dir)
+	if recoveredCurrentDeployment(state) || state.DeployAttempts != 0 || state.DeployCompletions != 0 {
+		t.Fatalf("legacy deploy command became delivery evidence: %#v", state)
 	}
 }
 
